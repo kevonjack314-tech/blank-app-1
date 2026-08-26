@@ -226,3 +226,68 @@ def test_signature_concepts_ignore_sacks_and_scrambles():
     # Only the 60 non-sack plays should survive.
     assert out["plays"].sum() == 60
     assert (out["epa"] > 0).all()
+
+
+# --------------------------------------------------------------- game model
+def _rating_frame():
+    return pd.DataFrame([
+        {"season": s, "team": t, "off_rating": o, "def_rating": d, "plays": 1000}
+        for s in (2024, 2025)
+        for t, o, d in [("AAA", 0.10, 0.05), ("BBB", -0.10, -0.05), ("CCC", 0.0, 0.0)]
+    ])
+
+
+def test_ratings_regress_toward_mean_and_recentre():
+    from nflproj import gamemodel as gmod
+    proj = gmod.project_ratings(_rating_frame(), anchor_season=2025)
+    # Offense persists more than defense, so it should retain more of its edge.
+    a = proj[proj.team == "AAA"].iloc[0]
+    assert 0 < a.off_rating < 0.10
+    assert 0 < a.def_rating < 0.05
+    assert abs(a.off_rating) / 0.10 > abs(a.def_rating) / 0.05
+    assert proj["off_rating"].mean() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_new_staff_shrinks_a_team_further():
+    from nflproj import gamemodel as gmod
+    base = gmod.project_ratings(_rating_frame(), anchor_season=2025)
+    pen = gmod.project_ratings(_rating_frame(), anchor_season=2025,
+                               coach_penalty={"AAA": 0.5})
+    b = base[base.team == "AAA"].iloc[0].off_rating
+    p = pen[pen.team == "AAA"].iloc[0].off_rating
+    assert abs(p) < abs(b)
+
+
+def test_home_field_favours_the_home_team():
+    from nflproj import gamemodel as gmod
+    proj = pd.DataFrame([{"team": "AAA", "off_rating": 0.0, "def_rating": 0.0},
+                         {"team": "BBB", "off_rating": 0.0, "def_rating": 0.0}])
+    sc = {"intercept": 22.0, "slope": 40.0, "hfa": 2.0,
+          "margin_sigma": 13.0, "total_sigma": 13.0}
+    g = gmod.predict_game("AAA", "BBB", proj, sc, n_sims=40000)
+    assert g.margin == pytest.approx(2.0, abs=0.01)
+    assert 0.52 < g.home_win_prob < 0.58
+
+
+def test_margin_variance_is_not_understated_by_shared_scoring():
+    """The two teams' scores are correlated; margin spread must stay calibrated."""
+    from nflproj import gamemodel as gmod
+    proj = pd.DataFrame([{"team": "AAA", "off_rating": 0.0, "def_rating": 0.0},
+                         {"team": "BBB", "off_rating": 0.0, "def_rating": 0.0}])
+    sc = {"intercept": 22.0, "slope": 40.0, "hfa": 0.0,
+          "margin_sigma": 13.0, "total_sigma": 10.0}
+    rng = np.random.default_rng(11)
+    g = gmod.predict_game("AAA", "BBB", proj, sc, n_sims=200000, rng=rng)
+    # A coin-flip game should sit at even money, not drift confident.
+    assert g.home_win_prob == pytest.approx(0.50, abs=0.01)
+
+
+def test_spread_edge_is_signed_against_the_market():
+    from nflproj import gamemodel as gmod
+    proj = pd.DataFrame([{"team": "AAA", "off_rating": 0.0, "def_rating": 0.0},
+                         {"team": "BBB", "off_rating": 0.0, "def_rating": 0.0}])
+    sc = {"intercept": 22.0, "slope": 40.0, "hfa": 6.0,
+          "margin_sigma": 13.0, "total_sigma": 10.0}
+    g = gmod.predict_game("AAA", "BBB", proj, sc, n_sims=2000, market_spread=3.0)
+    assert g.spread_edge == pytest.approx(3.0, abs=0.01)   # model likes home by 3 more
+    assert gmod.predict_game("AAA", "BBB", proj, sc, n_sims=2000).spread_edge is None

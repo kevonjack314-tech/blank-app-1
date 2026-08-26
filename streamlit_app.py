@@ -5,7 +5,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from nflproj import board, pipeline, playbook, projections as pj, report, schemes, usage as um
+from nflproj import (board, gamemodel as gm, pipeline, playbook,
+                     projections as pj, report, schemes, usage as um)
 from nflproj.config import PROJECTION_SEASON, TEAM_NAMES, TEAMS
 
 st.set_page_config(page_title="NFL Projection Model", page_icon="🏈", layout="wide")
@@ -27,10 +28,14 @@ def load():
     anchor = int(ctx.fingerprints["season"].max())
     lg_off = schemes.league_means(ctx.fingerprints, "offense", anchor)
     lg_def = schemes.league_means(ctx.fingerprints, "defense", anchor)
-    return ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor
+    ratings = gm.adjusted_ratings(ctx.plays)
+    penalties = gm.coaching_penalties(ctx.staffs)
+    team_proj = gm.project_ratings(ratings, anchor_season=anchor, coach_penalty=penalties)
+    scoring = gm.fit_scoring_map(ctx.plays, ctx.games[ctx.games["season"] <= anchor], ratings)
+    return ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings, team_proj, scoring
 
 
-ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor = load()
+ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings, team_proj, scoring = load()
 
 st.title("🏈 NFL Projection Model")
 st.caption(
@@ -38,8 +43,9 @@ st.caption(
     "scheme carried across coaching changes, constrained by personnel"
 )
 
-tab_board, tab_scout, tab_matchup, tab_scheme, tab_method = st.tabs(
-    ["Projection board", "Team scouting", "Matchup", "Scheme explorer", "Method & limits"]
+tab_board, tab_games, tab_scout, tab_matchup, tab_scheme, tab_method = st.tabs(
+    ["Projection board", "Game predictions", "Team scouting", "Matchup",
+     "Scheme explorer", "Method & limits"]
 )
 
 # ---------------------------------------------------------------- projections
@@ -127,6 +133,64 @@ with tab_board:
                 column_config={c: st.column_config.NumberColumn(c, format="%.1f%%")
                                for c in pdf.columns if c.startswith("o")},
             )
+
+# ------------------------------------------------------------- game model
+with tab_games:
+    st.caption(
+        "An independent view of each game, formed from opponent-adjusted EPA "
+        "ratings rather than the market. The player board takes the market line "
+        "as an input; this does not, so the two can disagree."
+    )
+    st.warning(
+        "**The closing line beats this model.** Over 544 held-out games it predicts "
+        "margin to 10.3 points against the market's 9.7, and picks 64.7% of winners "
+        "against the market's 68.4%. Betting its disagreements lost money in "
+        "backtest (48.7% against the spread, below the 52.4% break-even). Treat a "
+        "large edge as a flag that the model is missing something - usually injury "
+        "or personnel news - rather than as a signal.",
+        icon="⚠️",
+    )
+
+    gw = sorted(board.schedule_for(ctx.games, PROJECTION_SEASON)["week"].unique())
+    c1, c2 = st.columns([1, 3])
+    gweek = c1.selectbox("Week", gw, index=0, key="gm_week")
+    slate = gm.predict_slate(ctx.games, PROJECTION_SEASON, team_proj, scoring,
+                             week=int(gweek), n_sims=20000)
+    if slate.empty:
+        st.info("No games scheduled for this week.")
+    else:
+        show = slate.rename(columns={
+            "away": "Away", "home": "Home", "away_pts": "Away pts", "home_pts": "Home pts",
+            "model_margin": "Margin", "model_total": "Total", "home_win_pct": "Home win %",
+            "market_spread": "Mkt spread", "market_total": "Mkt total",
+            "spread_edge": "Spread edge", "total_edge": "Total edge",
+        })
+        st.dataframe(
+            show.drop(columns=["week", "game_id"]), hide_index=True, use_container_width=True,
+            column_config={"Home win %": st.column_config.NumberColumn(format="%.1f%%")},
+        )
+        st.caption(
+            "Margin is home-relative. Edge is the model minus the market; a positive "
+            "spread edge means the model likes the home side more than the market does. "
+            "Blank market columns mean no line is posted for that game yet."
+        )
+
+    st.subheader(f"Projected {PROJECTION_SEASON} team strength")
+    st.caption(
+        "Opponent-adjusted EPA per play, regressed toward the mean. Offense carries "
+        "year to year at r = 0.44 and defense at only r = 0.12, so defensive ratings "
+        "are pulled far harder toward average - a defence is close to a coin flip "
+        "from one season to the next. Teams with a new play caller are shrunk further."
+    )
+    tp = team_proj.copy()
+    tp["net"] = tp["off_rating"] + tp["def_rating"]
+    tp = tp.sort_values("net", ascending=False)
+    tp["new staff"] = tp["team"].map(lambda t: not ctx.staffs[t].continuity)
+    st.dataframe(
+        tp.rename(columns={"team": "Team", "off_rating": "Offense",
+                           "def_rating": "Defense", "net": "Net"}).round(4),
+        hide_index=True, use_container_width=True,
+    )
 
 # ------------------------------------------------------------------ scouting
 with tab_scout:

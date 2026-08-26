@@ -161,6 +161,66 @@ lines and its depth charts are supplied; projections are compared to what
 actually happened. Every team is treated as coaching-continuity in the backtest,
 so it measures the projection chain rather than the coaching research.
 
+## Game predictions
+
+The player projections *consume* the market line. The game model does not — it
+forms an independent view so the two can be compared.
+
+Team strength is estimated by ridge regression on play-level EPA
+(`epa ~ offense[team] + defense[opponent] + home`), which separates a team's own
+quality from the schedule it faced. Ratings are then carried forward with
+side-specific shrinkage, because the two sides of the ball behave completely
+differently:
+
+| | year-over-year correlation |
+| --- | --- |
+| Offensive EPA | 0.44 |
+| Defensive EPA | **0.12** |
+
+A defence is close to a coin flip from one season to the next, so defensive
+ratings are pulled hard toward average rather than projected forward. Teams with
+a new play caller are shrunk further still. During the season, ratings are
+refreshed from games already played and blended against the preseason prior by
+how much has been seen.
+
+Margin and total are simulated on separate calibrated axes rather than by
+drawing each team's score independently — the two scores in a game are
+correlated through pace and script, and that shared component *cancels* in the
+margin. Simulating team scores separately understated margin variance by about
+two points of standard deviation and made win probabilities visibly
+over-confident.
+
+### How good is it, honestly
+
+Held out over 544 games (2024–2025), predicting each week from data available
+before it:
+
+| | model | market closing line |
+| --- | --- | --- |
+| Margin MAE | 10.26 | **9.67** |
+| Margin correlation | 0.42 | **0.50** |
+| Total MAE | 10.19 | **10.06** |
+| Straight-up winners | 64.7% | **68.4%** |
+
+**The market is better on every measure.** Betting the model's disagreements
+lost money: 48.7% correct on edges of two points or more, against a 52.4%
+break-even at standard vig. A large edge is best read as a flag that the model
+is missing something the market knows — usually injury or personnel news — not
+as a signal to act on.
+
+The model does clear the naive baselines: 10.26 margin MAE against 11.17 for
+always picking a tie, and 64.7% winners against roughly 53% for always taking
+the home team. So it knows something. It just knows less than the closing line.
+
+One correction was tested and rejected. The model's margins are compressed
+toward zero — regressing actual margin on predicted gives a slope of 1.45, so
+scaling predictions up looks like an easy gain. Fitting that scale on 2024 and
+applying it to 2025 improved MAE by 0.04 points and made straight-up accuracy
+*worse* (63.6% → 62.9%), and the slope itself moved from 1.54 to 1.34 between
+seasons. The market shows the same apparent compression in this sample, which
+suggests it is a property of these two seasons rather than a fixable model
+defect. It was left out.
+
 ## What this does not do
 
 - **The coaching registry is research, not a feed.** It was assembled from
@@ -179,3 +239,6 @@ so it measures the projection chain rather than the coaching research.
   to a generic game environment, which flattens strength of schedule.
 - **Defensive personnel is not projected.** Defensive scheme is carried across
   coaching changes, but without a unit-quality projection to go with it.
+- **The game model does not beat the market**, and is not built to. It has no
+  access to injury reports, weather, or news, and it has no mechanism for the
+  in-week information that moves a line.
