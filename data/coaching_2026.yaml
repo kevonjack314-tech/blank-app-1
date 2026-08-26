@@ -60,6 +60,34 @@ teams:
       better template for Jaxson Dart. Harbaugh's real portable signature is
       special teams and fourth-down aggression, not offensive structure.
 
+  ATL:
+    confidence: high
+    source: "atlantafalcons.com staff announcement"
+    play_caller: HC
+    def_play_caller: DC
+    hc:
+      name: Kevin Stefanski
+      new: true
+      prior: [{team: CLE, seasons: [2022, 2023, 2024, 2025], role: HC}]
+    oc:
+      name: Tommy Rees
+      new: true
+      prior: []
+      lineage: {team: CLE, seasons: [2025]}
+    dc:
+      name: Jeff Ulbrich
+      new: false
+      prior: [{team: ATL, seasons: [2025], role: DC}]
+    notes: >
+      Stefanski called his own plays in Cleveland and does so here, so his
+      Browns fingerprint carries the offensive projection directly. The pass-run
+      balance barely moves - Atlanta and Cleveland were both well below expected
+      pass rate in 2025 - but the formation profile shifts hard: Stefanski works
+      under centre far more than Atlanta did, and motions less. Expect more
+      under-centre wide zone and play-action, which is a usage change for Bijan
+      Robinson rather than a volume one. Ulbrich returns as coordinator, so the
+      defence is continuity.
+
   BAL:
     confidence: high
     source: "Ravens staff announcement; NFL.com hire report"
