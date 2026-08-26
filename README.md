@@ -33,6 +33,9 @@ First run downloads roughly 90 MB of nflverse data into `data/raw/` and caches i
 - **Game predictions** — independent margin, total and win probability per game
   from opponent-adjusted EPA ratings, shown next to the market line. It beats the
   naive baselines and loses to the closing line; see below.
+- **Situational context** — wind, venue and divisional status feed both the game
+  and player models; travel and body clock are shown but not applied, because
+  they no longer predict anything (see below).
 - **Scheme explorer** — all 32 projected fingerprints in one sortable table.
 
 ## Coaching changes are configuration, not code
@@ -72,6 +75,25 @@ money in backtest (48.7% ATS against a 52.4% break-even). It clears the naive
 baselines comfortably, so it knows something — it just knows less than the
 closing line. Read a large edge as "the model is missing news," not as a signal.
 
+## Travel, weather and divisional games
+
+All four were tested over 7,276 games with a closing line (1999–2025) and
+checked across three eras. `scripts/measure_context.py` reproduces it.
+
+**Applied**: wind (−0.19 pts of total per mph above 8), indoor venue (+1.0),
+divisional game (−0.91). Wind also reshapes play-calling — offenses throw less,
+shorter, and complete fewer — so it moves player projections, not just totals.
+
+**Not applied**: travel distance, time zones, body clock. The east-to-west
+effect was worth −2.8 points against the spread in 1999–2009 and has decayed to
+zero (−0.11, then +0.24). The famous West-Coast-team-at-1pm-Eastern body-clock
+effect never shows up at all. These are computed and displayed for context, and
+carry no weight in any number.
+
+Cold weather does almost nothing on its own: about −0.009 points of total per
+degree, so a 40-degree swing is worth a third of a point. Wind is the weather
+variable that matters.
+
 ## Layout
 
 ```
@@ -85,9 +107,13 @@ nflproj/
   projections.py   volume, bootstrapped yardage, TD simulation
   board.py         assembles full projection boards
   playbook.py      situational tendencies and signature concepts
+  gamemodel.py     team ratings, margin/total/win probability
+  venues.py        stadium geography, climate, travel and environment
   report.py        scouting language
 scripts/
   backtest.py           2025 holdout validation
+  backtest_games.py     game model vs the closing line
+  measure_context.py    travel, weather and divisional effect tests
   build_projections.py  season-long CSV exports
 ```
 

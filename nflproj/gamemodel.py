@@ -22,6 +22,7 @@ import pandas as pd
 from scipy import sparse
 from scipy.sparse.linalg import lsqr
 
+from . import venues as V
 from .config import TEAMS, normalize_team
 
 # Year-over-year persistence of opponent-adjusted EPA, measured 2022-2025.
@@ -193,7 +194,8 @@ def predict_game(home: str, away: str, proj: pd.DataFrame, scoring: dict,
                  n_sims: int = 40000, rng: np.random.Generator | None = None,
                  market_spread: float | None = None,
                  market_total: float | None = None,
-                 rest_diff: float = 0.0) -> GamePrediction | None:
+                 rest_diff: float = 0.0,
+                 env: dict | None = None) -> GamePrediction | None:
     """Predict one game from projected ratings."""
     rng = rng or np.random.default_rng(7)
     r = proj.set_index("team")
@@ -208,6 +210,13 @@ def predict_game(home: str, away: str, proj: pd.DataFrame, scoring: dict,
     away_pts = b + s * (r.loc[away, "off_rating"] - r.loc[home, "def_rating"])
     # Extra rest is worth a fraction of a point per day of advantage.
     home_pts += 0.08 * rest_diff
+
+    # Scoring environment: wind, roof and divisional familiarity move the total
+    # without favouring either side, so split the adjustment between them.
+    if env and np.isfinite(env.get("total_delta", np.nan)):
+        half = float(env["total_delta"]) / 2.0
+        home_pts += half
+        away_pts += half
 
     # Simulate margin and total as independent axes with their own calibrated
     # spreads, then recover the two scores. Drawing each team's points
@@ -256,9 +265,11 @@ def predict_slate(games: pd.DataFrame, season: int, proj: pd.DataFrame,
         spread = float(r.spread_line) if pd.notna(r.spread_line) else None
         total = float(r.total_line) if pd.notna(r.total_line) else None
         rest = (float(r.home_rest) - float(r.away_rest)) if pd.notna(getattr(r, "home_rest", np.nan)) else 0.0
+        env = V.environment({"roof": getattr(r, "roof", None), "wind": getattr(r, "wind", None),
+                             "div_game": getattr(r, "div_game", 0)})
         p = predict_game(home, away, proj, scoring, n_sims=n_sims,
                          rng=np.random.default_rng(1000 + i),
-                         market_spread=spread, market_total=total, rest_diff=rest)
+                         market_spread=spread, market_total=total, rest_diff=rest, env=env)
         if p is None:
             continue
         rows.append({
@@ -269,6 +280,11 @@ def predict_slate(games: pd.DataFrame, season: int, proj: pd.DataFrame,
             "market_spread": spread, "market_total": total,
             "spread_edge": round(p.spread_edge, 1) if p.spread_edge is not None else None,
             "total_edge": round(p.total_edge, 1) if p.total_edge is not None else None,
+            "wind": getattr(r, "wind", None), "roof": getattr(r, "roof", None),
+            "divisional": bool(getattr(r, "div_game", 0) == 1),
+            "env_pts": round(env["total_delta"], 2),
+            "travel_miles": round(V.haversine(away, home)),
+            "tz_shift": V.timezone_shift(away, home),
         })
     return pd.DataFrame(rows)
 

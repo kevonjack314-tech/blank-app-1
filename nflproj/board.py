@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from . import availability as av
+from . import venues as V
 from . import projections as pj
 from . import usage as usage_mod
 from . import schemes
@@ -19,6 +20,18 @@ def schedule_for(games: pd.DataFrame, season: int, week: int | None = None) -> p
     if week is not None:
         g = g[g["week"] == week]
     return g
+
+
+def game_environments(games: pd.DataFrame, season: int, week: int) -> dict[str, dict]:
+    """Scoring environment per team for a given week."""
+    g = schedule_for(games, season, week)
+    out: dict[str, dict] = {}
+    for _, r in g.iterrows():
+        env = V.environment({"roof": r.get("roof"), "wind": r.get("wind"),
+                             "div_game": r.get("div_game", 0)})
+        out[normalize_team(r["home_team"])] = env
+        out[normalize_team(r["away_team"])] = env
+    return out
 
 
 def game_contexts(games: pd.DataFrame, season: int, week: int) -> dict[str, pj.GameContext]:
@@ -49,6 +62,7 @@ def project_team(
     team: str, ctx, projections_map: dict, usage_hist: pd.DataFrame,
     sampler: pj.TouchSampler, game_ctx: pj.GameContext,
     league_def: pd.Series, n_sims: int = 20000, seed: int | None = None,
+    env: dict | None = None,
 ) -> list[pj.PlayerProjection]:
     """Project every rostered skill player for one team in one game."""
     rng = np.random.default_rng(seed)
@@ -58,7 +72,7 @@ def project_team(
     opp_scheme = projections_map[opp]["offense"]["projected"] if opp in projections_map else None
     opp_def = projections_map[opp]["defense"]["projected"] if opp in projections_map else None
 
-    volume = pj.team_volume(scheme, game_ctx, opp_scheme)
+    volume = pj.team_volume(scheme, game_ctx, opp_scheme, env=env)
     adj = pj.defense_adjustment(opp_def, league_def)
 
     chart = ctx.chart[ctx.chart["team"] == team]
@@ -81,7 +95,7 @@ def project_team(
             results.append(pj.project_quarterback(
                 player_id=pid, name=name, team=team, usage_hist=usage_hist,
                 qb_hist=ctx.qb_profiles, volume=volume, sampler=sampler,
-                scheme=scheme, def_adj=adj, n_sims=n_sims, rng=rng,
+                scheme=scheme, def_adj=adj, n_sims=n_sims, rng=rng, env=env,
             ))
         else:
             shared, continuity = usage_mod.qb_continuity(ctx.plays, qb_id, pid)
@@ -90,6 +104,7 @@ def project_team(
                 usage_hist=usage_hist, volume=volume, sampler=sampler,
                 scheme=scheme, def_adj=adj, n_sims=n_sims, rng=rng,
                 current_team=team, qb_shared_targets=shared, qb_continuity=continuity,
+                env=env,
             ))
 
     _rebalance(results, volume)

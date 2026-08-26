@@ -221,6 +221,76 @@ seasons. The market shows the same apparent compression in this sample, which
 suggests it is a property of these two seasons rather than a fixable model
 defect. It was left out.
 
+## Situational context: travel, weather, and familiarity
+
+Four factors were tested — travel distance and time zones, body clock at
+kickoff, weather, and divisional familiarity. Each was measured over **7,276
+games with a closing line (1999–2025)**, and checked for stability across three
+eras. Some are real. Most of the famous ones are not, any more.
+
+The test is deliberately strict. Performance is measured against the *closing
+spread*, because the market already prices team quality — a West Coast team
+losing in the East proves nothing if it was an underdog. The question is whether
+it loses by more than the line expected.
+
+### What is applied
+
+| Effect | Size | Evidence |
+| --- | --- | --- |
+| Wind | **−0.19 pts of total per mph** above 8 | t = −7.5 raw; holds in all three eras |
+| Indoor venue | **+1.0 pts** of total | t = +9.4 raw; holds in all three eras |
+| Divisional game | **−0.91 pts** of total | t = −4.4 raw; consistent sign throughout |
+
+Wind is the weather variable that matters, and it is not subtle. Measured over
+7,901 charted plays in 15+ mph conditions against a calm outdoor baseline,
+offenses throw less (pass rate −2.4 points), throw shorter (deep rate −14%
+relative), and complete fewer (−2.2 points). Those changes flow into the player
+projections, which is why a windy game moves a quarterback's yardage down and
+his running back's up.
+
+Cold, notably, does almost nothing on its own. Controlling for the market total,
+each degree is worth −0.009 points — a 40-degree swing moves a game by about a
+third of a point. Freezing games do not reliably go under.
+
+### What is deliberately not applied
+
+Travel distance, time zones crossed, and visiting-team body clock at kickoff are
+computed and displayed, but carry **no weight** in any projection. They were
+tested and failed:
+
+| Split | 1999–2009 | 2010–2017 | 2018–2025 |
+| --- | --- | --- | --- |
+| East team travelling west, 2+ zones | **−2.79** (t = −3.6) | −0.11 | +0.24 |
+| Dome team playing outdoors | **−1.49** (t = −2.6) | −0.12 | +0.56 |
+| West team travelling east, 2+ zones | +0.22 | +0.11 | +1.69 |
+
+The east-to-west effect was real and large a generation ago. It is gone. That is
+what an efficient market does to a publicised edge, and a model that still paid
+for it would be betting on a pattern that stopped existing. The famous "West
+Coast team in a 1pm Eastern kickoff" body-clock effect does not appear at all
+(t = −0.58 across the full sample), and the raw version of it has the *opposite*
+sign to the folklore, because West Coast teams have simply been good.
+
+Divisional games are also less special than they sound. They are lower-scoring,
+which is applied — but against the spread the effect washes out in the modern
+era (t = 1.05 since 2010), and divisional games are *not* closer than the line
+expects: average absolute margin 11.36 against 11.65 for non-divisional.
+
+### A note on "rivalry"
+
+There is no rivalry variable. Divisional status is the only objective, complete
+definition available; anything beyond it (Packers–Bears being special in a way
+Packers–Vikings is not) would be a hand-built list encoding my own assumptions,
+and it would not be measurable. Divisional games are what the data can speak to.
+
+### Weather availability
+
+Weather is only published once a game has been played, so a season-ahead
+projection has none, and the model correctly applies no adjustment rather than
+inventing one. Roof and divisional status *are* known in advance and always
+apply. The app exposes a wind slider so a forecast can be entered by hand during
+game week.
+
 ## What this does not do
 
 - **The coaching registry is research, not a feed.** It was assembled from
@@ -239,6 +309,10 @@ defect. It was left out.
   to a generic game environment, which flattens strength of schedule.
 - **Defensive personnel is not projected.** Defensive scheme is carried across
   coaching changes, but without a unit-quality projection to go with it.
+- **No travel or body-clock adjustment**, by choice — see above. The effects
+  were real historically and are not any more.
+- **No true rivalry variable**, only divisional status.
+- **Weather must be entered by hand** for future games; it is not forecast.
 - **The game model does not beat the market**, and is not built to. It has no
   access to injury reports, weather, or news, and it has no mechanism for the
   in-week information that moves a line.

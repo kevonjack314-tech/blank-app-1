@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from nflproj import (board, gamemodel as gm, pipeline, playbook,
-                     projections as pj, report, schemes, usage as um)
+                     projections as pj, report, schemes, usage as um, venues as V)
 from nflproj.config import PROJECTION_SEASON, TEAM_NAMES, TEAMS
 
 st.set_page_config(page_title="NFL Projection Model", page_icon="🏈", layout="wide")
@@ -61,14 +61,55 @@ with tab_board:
     n_sims = c4.select_slider("Simulations", [2000, 5000, 10000, 20000, 40000], value=10000)
 
     gcs = board.game_contexts(ctx.games, PROJECTION_SEASON, int(week))
+    envs = board.game_environments(ctx.games, PROJECTION_SEASON, int(week))
     if team not in gcs:
         st.warning(f"{team} is on bye in week {week}.")
     else:
         gc = gcs[team]
+        env = dict(envs.get(team, {}))
+
+        sched_row = board.schedule_for(ctx.games, PROJECTION_SEASON, int(week))
+        row = sched_row[(sched_row.home_team == team) | (sched_row.away_team == team)]
+        row = row.iloc[0] if len(row) else None
+
+        with st.expander("Conditions and travel", expanded=False):
+            e1, e2 = st.columns([1, 1.4])
+            known_wind = row is not None and pd.notna(row.get("wind"))
+            wind_val = float(row.get("wind")) if known_wind else 0.0
+            forecast = e1.slider(
+                "Wind (mph)", 0, 35, int(wind_val),
+                help="Weather is only published once a game is played, so a season-ahead "
+                     "projection has none. Enter a forecast to see its effect.",
+            )
+            roof = row.get("roof") if row is not None else None
+            div = int(row.get("div_game", 0)) if row is not None else 0
+            env = V.environment({"roof": roof, "wind": float(forecast), "div_game": div})
+
+            if row is not None:
+                away, home = row["away_team"], row["home_team"]
+                tv = V.travel_context(away, home, V.parse_kickoff(row.get("gametime")))
+                bc = tv.get("away_body_clock")
+                e2.markdown(
+                    f"**Venue** {roof or 'unknown'} · "
+                    f"**Divisional** {'yes' if div else 'no'}  \n"
+                    f"**{away} travel** {tv['travel_miles']:,.0f} miles, "
+                    f"{abs(tv['tz_shift'])} time zone(s) {tv['direction'] if tv['tz_shift'] else ''}"
+                    + (f" · body clock {bc:.0f}:00" if bc is not None and pd.notna(bc) else "")
+                    + f"  \n**Scoring environment** {env['total_delta']:+.2f} pts"
+                )
+                e2.caption(
+                    "Travel is shown for context only. Distance, time zones and body clock "
+                    "were tested against 7,276 games and are **not** applied — the "
+                    "east-to-west effect was worth -2.8 points against the spread in "
+                    "1999-2009 and has since decayed to zero. Wind, roof and divisional "
+                    "status **are** applied."
+                )
+
         res = board.project_team(team, ctx, pm, usage_hist, sampler, gc, lg_def,
-                                 n_sims=int(n_sims), seed=int(week))
+                                 n_sims=int(n_sims), seed=int(week), env=env)
         scheme = pm[team]["offense"]["projected"]
-        vol = pj.team_volume(scheme, gc, pm.get(gc.opponent, {}).get("offense", {}).get("projected"))
+        vol = pj.team_volume(scheme, gc,
+                             pm.get(gc.opponent, {}).get("offense", {}).get("projected"), env=env)
 
         m1, m2, m3, m4, m5 = st.columns(5)
         opp = gc.opponent or "—"
@@ -164,6 +205,8 @@ with tab_games:
             "model_margin": "Margin", "model_total": "Total", "home_win_pct": "Home win %",
             "market_spread": "Mkt spread", "market_total": "Mkt total",
             "spread_edge": "Spread edge", "total_edge": "Total edge",
+            "env_pts": "Env pts", "divisional": "Div", "roof": "Roof",
+            "travel_miles": "Away miles", "tz_shift": "TZ",
         })
         st.dataframe(
             show.drop(columns=["week", "game_id"]), hide_index=True, use_container_width=True,
@@ -172,7 +215,10 @@ with tab_games:
         st.caption(
             "Margin is home-relative. Edge is the model minus the market; a positive "
             "spread edge means the model likes the home side more than the market does. "
-            "Blank market columns mean no line is posted for that game yet."
+            "Blank market columns mean no line is posted for that game yet. "
+            "**Env pts** is the scoring-environment adjustment applied to the total from "
+            "roof, wind and divisional status. **Away miles** and **TZ** are shown for "
+            "context and are deliberately not applied — see Method & limits."
         )
 
     st.subheader(f"Projected {PROJECTION_SEASON} team strength")

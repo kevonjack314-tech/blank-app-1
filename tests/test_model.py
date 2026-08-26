@@ -291,3 +291,62 @@ def test_spread_edge_is_signed_against_the_market():
     g = gmod.predict_game("AAA", "BBB", proj, sc, n_sims=2000, market_spread=3.0)
     assert g.spread_edge == pytest.approx(3.0, abs=0.01)   # model likes home by 3 more
     assert gmod.predict_game("AAA", "BBB", proj, sc, n_sims=2000).spread_edge is None
+
+
+# ------------------------------------------------------------- environment
+def test_wind_only_counts_outdoors_and_above_the_calm_threshold():
+    from nflproj import venues as ven
+    assert ven.environment({"roof": "dome", "wind": 30, "div_game": 0})["wind_excess"] == 0
+    assert ven.environment({"roof": "outdoors", "wind": 5, "div_game": 0})["wind_excess"] == 0
+    assert ven.environment({"roof": "outdoors", "wind": 20, "div_game": 0})["wind_excess"] == 12
+
+
+def test_wind_suppresses_scoring_and_passing():
+    from nflproj import venues as ven
+    calm = ven.environment({"roof": "outdoors", "wind": 4, "div_game": 0})
+    windy = ven.environment({"roof": "outdoors", "wind": 25, "div_game": 0})
+    assert windy["total_delta"] < calm["total_delta"]
+    assert windy["pass_yards_mult"] < 1.0
+    assert windy["deep_rate_mult"] < windy["pass_yards_mult"]   # deep shots suffer most
+    assert windy["pass_rate_delta"] < 0                          # teams throw less
+
+
+def test_unknown_weather_produces_no_adjustment():
+    """Future games have no weather; the model must not invent one."""
+    from nflproj import venues as ven
+    e = ven.environment({"roof": "outdoors", "wind": np.nan, "div_game": 0})
+    assert e["total_delta"] == pytest.approx(0.0)
+    assert e["pass_yards_mult"] == 1.0
+
+
+def test_roof_and_divisional_apply_without_weather():
+    from nflproj import venues as ven
+    dome = ven.environment({"roof": "dome", "wind": np.nan, "div_game": 0})
+    div = ven.environment({"roof": "outdoors", "wind": np.nan, "div_game": 1})
+    assert dome["total_delta"] > 0      # domes score more
+    assert div["total_delta"] < 0       # divisional games score less
+
+
+def test_travel_is_reported_but_never_applied():
+    from nflproj import venues as ven
+    t = ven.travel_context("SEA", "MIA", 13.0)
+    assert t["travel_miles"] > 2500
+    assert t["tz_shift"] == -3            # Seattle travels east... to Eastern time
+    assert t["away_body_clock"] == 10.0   # 1pm ET is 10am to a Pacific body clock
+    assert t["applied_to_projection"] is False
+    assert "total_delta" not in t         # carries no scoring weight
+
+
+def test_wind_shifts_volume_toward_the_run():
+    from nflproj import venues as ven
+    scheme = pd.Series({
+        "plays_per_game": 63, "early_down_pass_rate": 0.55, "sack_rate_allowed": 0.06,
+        "scramble_rate": 0.06, "qb_designed_run_rate": 0.03, "rz_pass_rate": 0.52,
+        "g2g_run_rate": 0.55, "sec_per_play": 31, "adot": 8.0,
+    })
+    gc = pj.GameContext("X", total_line=45, spread_line=0)
+    calm = pj.team_volume(scheme, gc, env=ven.environment({"roof": "outdoors", "wind": 3, "div_game": 0}))
+    windy = pj.team_volume(scheme, gc, env=ven.environment({"roof": "outdoors", "wind": 25, "div_game": 0}))
+    assert windy["pass_rate"] < calm["pass_rate"]
+    assert windy["rb_carries"] > calm["rb_carries"]
+    assert windy["expected_off_td"] < calm["expected_off_td"]
