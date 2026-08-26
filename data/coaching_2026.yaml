@@ -1,0 +1,332 @@
+# 2026 NFL coaching registry
+# ---------------------------------------------------------------------------
+# This file is the model's source of truth for who is calling plays in 2026 and
+# where they came from. It is deliberately hand-editable: coaching news moves
+# faster than any data feed, so correcting a line here immediately changes the
+# projections. Nothing else in the codebase hardcodes a coach.
+#
+# Fields per team:
+#   play_caller      : HC | OC  - whose offensive fingerprint gets primary weight
+#   def_play_caller  : HC | DC
+#   hc / oc / dc:
+#     name       : coach name
+#     new        : true if this is their first season in the role here
+#     prior      : previous NFL stops, most recent first. Each entry is
+#                  {team, seasons, role}. Only NFL stops with play-by-play in
+#                  the 2022-2025 window contribute a measured fingerprint.
+#     lineage    : fallback when `prior` has no usable NFL sample (college hire,
+#                  position coach). Names the system they come from as
+#                  {team, seasons} - used as a proxy fingerprint at reduced
+#                  weight, since a position coach shapes a scheme less than the
+#                  coordinator they served under.
+#   confidence   : high | medium | low - how well corroborated the staff is.
+#                  Drives how far the model moves off last year's baseline.
+#
+# Teams omitted from `teams:` are treated as full continuity: 2025 staff
+# retained, projection anchored to their own 2025 fingerprint.
+
+meta:
+  season: 2026
+  compiled: "2026-08-26"
+  notes: >
+    Head-coach and coordinator assignments corroborated against team releases
+    and reporting where possible. Aggregator summaries disagreed on several
+    hires, so anything not directly confirmed is marked medium/low confidence
+    and the model leans correspondingly harder on team continuity.
+
+teams:
+  NYG:
+    confidence: high
+    source: "giants.com staff announcement"
+    play_caller: OC
+    def_play_caller: DC
+    hc:
+      name: John Harbaugh
+      new: true
+      prior: [{team: BAL, seasons: [2022, 2023, 2024, 2025], role: HC}]
+    oc:
+      name: Matt Nagy
+      new: true
+      prior: [{team: KC, seasons: [2023, 2024, 2025], role: OC}]
+    dc:
+      name: Dennard Wilson
+      new: true
+      prior: [{team: TEN, seasons: [2024, 2025], role: DC}]
+    notes: >
+      The headline case for scheme transfer. Harbaugh's Baltimore offense was
+      the most run-leaning in football, but that was Todd Monken's system built
+      around Lamar Jackson's designed-run game. Nagy calls the plays here, and
+      his Kansas City fingerprint - heavy RPO, high shotgun, quick game - is the
+      better template for Jaxson Dart. Harbaugh's real portable signature is
+      special teams and fourth-down aggression, not offensive structure.
+
+  BAL:
+    confidence: high
+    source: "Ravens staff announcement; NFL.com hire report"
+    play_caller: OC
+    def_play_caller: HC
+    hc:
+      name: Jesse Minter
+      new: true
+      first_time_hc: true
+      prior: [{team: LAC, seasons: [2024, 2025], role: DC}]
+      lineage: {team: LAC, seasons: [2024, 2025]}
+    oc:
+      name: Declan Doyle
+      new: true
+      prior: []
+      lineage: {team: DEN, seasons: [2025]}
+    dc:
+      name: Anthony Weaver
+      new: true
+      prior: [{team: MIA, seasons: [2024, 2025], role: DC}]
+    notes: >
+      First-time head coach whose entire identity is defensive. His two years
+      running the Chargers defense under Jim Harbaugh are a real, measurable
+      NFL sample, so the defensive projection leans on that. The offense is the
+      uncertain half: a new coordinator inheriting Lamar Jackson. Personnel
+      pins the QB run game in place regardless of scheme preference.
+
+  CLE:
+    confidence: high
+    source: "clevelandbrowns.com coordinator announcement"
+    play_caller: HC
+    def_play_caller: DC
+    hc:
+      name: Todd Monken
+      new: true
+      prior: [{team: BAL, seasons: [2023, 2024, 2025], role: OC}]
+    oc:
+      name: Travis Switzer
+      new: true
+      prior: []
+    dc:
+      name: Mike Rutenberg
+      new: true
+      prior: []
+    notes: >
+      Monken brings Baltimore's offensive system without Baltimore's
+      quarterback. His fingerprint there was shaped by Jackson's designed-run
+      volume, so the personnel adjustment matters more here than almost
+      anywhere - the structure travels, the QB run game does not.
+
+  LV:
+    confidence: high
+    source: "raiders.com staff announcement"
+    play_caller: HC
+    def_play_caller: DC
+    hc:
+      name: Klint Kubiak
+      new: true
+      prior:
+        - {team: SEA, seasons: [2025], role: OC}
+        - {team: NO, seasons: [2024], role: OC}
+        - {team: SF, seasons: [2023], role: passing game coordinator}
+    oc:
+      name: Andrew Janocko
+      new: true
+      prior: []
+      lineage: {team: SEA, seasons: [2025]}
+    dc:
+      name: Rob Leonard
+      new: false
+      prior: [{team: LV, seasons: [2025], role: DC}]
+    notes: >
+      Kubiak calls it, and his lineage is the Shanahan/Kubiak wide-zone tree -
+      outside zone, heavy play-action, condensed formations. Defense is a
+      holdover, so that side is near-continuity.
+
+  PIT:
+    confidence: high
+    source: "steelers.com staff announcement"
+    play_caller: HC
+    def_play_caller: DC
+    hc:
+      name: Mike McCarthy
+      new: true
+      prior: [{team: DAL, seasons: [2022, 2023, 2024], role: HC}]
+    oc:
+      name: Brian Angelichio
+      new: true
+      prior: []
+    dc:
+      name: Patrick Graham
+      new: true
+      prior: [{team: LV, seasons: [2022, 2023, 2024, 2025], role: DC}]
+    notes: >
+      McCarthy calls plays himself, so his Dallas fingerprint carries the
+      offensive weight. Graham brings four measured seasons of Raiders defense.
+
+  BUF:
+    confidence: high
+    source: "multiple hire trackers"
+    play_caller: HC
+    def_play_caller: DC
+    hc:
+      name: Joe Brady
+      new: true
+      prior: [{team: BUF, seasons: [2023, 2024, 2025], role: OC}]
+    oc:
+      name: null
+      new: false
+      prior: []
+    dc:
+      name: null
+      new: false
+      prior: [{team: BUF, seasons: [2025], role: DC}]
+    notes: >
+      Internal promotion, so this is the mildest transition in the league. Brady
+      already called this offense - continuity dominates.
+
+  MIA:
+    confidence: medium
+    source: "hire trackers; coordinator names less well corroborated"
+    play_caller: OC
+    def_play_caller: HC
+    hc:
+      name: Jeff Hafley
+      new: true
+      first_time_hc: true
+      prior: [{team: GB, seasons: [2024, 2025], role: DC}]
+    oc:
+      name: Bobby Slowik
+      new: true
+      prior: [{team: HOU, seasons: [2023, 2024], role: OC}]
+    dc:
+      name: Sean Duggan
+      new: true
+      prior: []
+      lineage: {team: GB, seasons: [2024, 2025]}
+    notes: >
+      Hafley's Green Bay defense is the defensive template. Slowik brings the
+      Houston passing structure from his coordinator years.
+
+  ARI:
+    confidence: medium
+    source: "hire trackers"
+    play_caller: OC
+    def_play_caller: DC
+    hc:
+      name: Mike LaFleur
+      new: true
+      first_time_hc: true
+      prior: [{team: LA, seasons: [2024, 2025], role: OC}]
+    oc:
+      name: Nathaniel Hackett
+      new: true
+      prior: [{team: NYJ, seasons: [2023, 2024], role: OC}]
+    dc:
+      name: null
+      new: false
+      prior: []
+    notes: >
+      Two offensive voices with different fingerprints - LaFleur from the Rams'
+      motion-heavy system, Hackett from a much more run-tilted Jets offense.
+      The model weights the designated play caller and keeps uncertainty wide.
+
+  TEN:
+    confidence: medium
+    source: "hire trackers"
+    play_caller: OC
+    def_play_caller: HC
+    hc:
+      name: Robert Saleh
+      new: true
+      prior: [{team: SF, seasons: [2024, 2025], role: DC}]
+    oc:
+      name: Brian Daboll
+      new: true
+      prior: [{team: NYG, seasons: [2022, 2023, 2024, 2025], role: HC}]
+    dc:
+      name: null
+      new: true
+      prior: []
+      lineage: {team: SF, seasons: [2024, 2025]}
+    notes: >
+      Saleh's defensive identity is the San Francisco four-man rush - low blitz
+      rate, wide-nine front. Daboll runs the offense.
+
+  LAC:
+    confidence: high
+    source: "chargers.com staff; NFL.com McDaniel hire report"
+    play_caller: OC
+    def_play_caller: DC
+    hc:
+      name: Jim Harbaugh
+      new: false
+      prior: [{team: LAC, seasons: [2024, 2025], role: HC}]
+    oc:
+      name: Mike McDaniel
+      new: true
+      prior: [{team: MIA, seasons: [2022, 2023, 2024, 2025], role: HC}]
+    dc:
+      name: Chris O'Leary
+      new: true
+      first_time_dc: true
+      prior: []
+      lineage: {team: LAC, seasons: [2024, 2025]}
+    notes: >
+      Head coach stays, but the offense changes hands completely. McDaniel's
+      Miami fingerprint - extreme motion rate, outside zone, manufactured
+      touches - is one of the most distinctive in the league and is a poor match
+      for the Chargers' recent identity. Expect a large scheme shift.
+
+  KC:
+    confidence: medium
+    source: "coordinator trackers"
+    play_caller: HC
+    def_play_caller: DC
+    hc:
+      name: Andy Reid
+      new: false
+      prior: [{team: KC, seasons: [2022, 2023, 2024, 2025], role: HC}]
+    oc:
+      name: Eric Bieniemy
+      new: true
+      prior: []
+      lineage: {team: KC, seasons: [2022]}
+    dc:
+      name: Steve Spagnuolo
+      new: false
+      prior: [{team: KC, seasons: [2022, 2023, 2024, 2025], role: DC}]
+    notes: >
+      Reid has always been the play caller, so a coordinator change moves this
+      offense very little. Near-continuity.
+
+  DEN:
+    confidence: medium
+    source: "team season reporting"
+    play_caller: HC
+    def_play_caller: DC
+    hc:
+      name: Sean Payton
+      new: false
+      prior: [{team: DEN, seasons: [2023, 2024, 2025], role: HC}]
+    oc:
+      name: Davis Webb
+      new: false
+      prior: [{team: DEN, seasons: [2025], role: OC}]
+    dc:
+      name: Vance Joseph
+      new: false
+      prior: [{team: DEN, seasons: [2023, 2024, 2025], role: DC}]
+
+  WAS:
+    confidence: medium
+    source: "team season reporting"
+    play_caller: OC
+    def_play_caller: DC
+    hc:
+      name: Dan Quinn
+      new: false
+      prior: [{team: WAS, seasons: [2024, 2025], role: HC}]
+    oc:
+      name: David Blough
+      new: true
+      prior: []
+      lineage: {team: WAS, seasons: [2025]}
+    dc:
+      name: Daronte Jones
+      new: true
+      prior: []
+      lineage: {team: WAS, seasons: [2025]}
