@@ -159,24 +159,29 @@ teams:
 
   BUF:
     confidence: high
-    source: "multiple hire trackers"
+    source: "buffalobills.com staff announcement"
     play_caller: HC
     def_play_caller: DC
     hc:
       name: Joe Brady
       new: true
+      first_time_hc: true
       prior: [{team: BUF, seasons: [2023, 2024, 2025], role: OC}]
     oc:
-      name: null
-      new: false
-      prior: []
+      name: Pete Carmichael
+      new: true
+      prior: [{team: NO, seasons: [2022, 2023], role: OC}]
     dc:
-      name: null
-      new: false
-      prior: [{team: BUF, seasons: [2025], role: DC}]
+      name: Jim Leonhard
+      new: true
+      prior: [{team: DEN, seasons: [2024], role: position coach}]
+      lineage: {team: BUF, seasons: [2025]}
     notes: >
-      Internal promotion, so this is the mildest transition in the league. Brady
-      already called this offense - continuity dominates.
+      The mildest transition in the league on offense: Brady is promoted from
+      within and keeps play-calling duties, so his own Buffalo fingerprint is
+      both the coach signature and the team baseline. Carmichael arrives as
+      coordinator but Brady calls it. The defensive projection leans on Buffalo
+      continuity, since Leonhard has no NFL coordinator sample.
 
   MIA:
     confidence: medium

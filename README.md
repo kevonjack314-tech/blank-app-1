@@ -48,8 +48,9 @@ season's baseline. Fix a line, rerun, and the projections change.
 | --- | --- | --- |
 | Targets | +0.04 | 0.54 |
 | Carries | +0.22 | 0.72 |
-| Rushing yards | +0.99 | 0.67 |
-| Scrimmage yards | +2.30 | 0.48 |
+| Receiving yards | +0.26 | 0.50 |
+| Rushing yards | +0.98 | 0.67 |
+| Scrimmage yards | +1.24 | 0.54 |
 | Anytime TD | +1.6 pts | — |
 
 The backtest is what forced the availability model: projecting every listed player
