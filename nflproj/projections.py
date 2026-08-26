@@ -235,15 +235,15 @@ class TouchSampler:
         if pool is None or len(pool) == 0:
             return np.zeros(len(n))
         n = np.asarray(n, dtype=int)
-        out = np.zeros(len(n), dtype=float)
         total = int(n.sum())
         if total == 0:
-            return out
+            return np.zeros(len(n), dtype=float)
         draws = self.rng.choice(pool, size=total, replace=True) * scale
+        # Segment sums via one cumulative pass rather than a Python loop over
+        # simulations - this runs tens of thousands of times per projection.
         idx = np.concatenate([[0], np.cumsum(n)])
-        for i in range(len(n)):
-            out[i] = draws[idx[i]:idx[i + 1]].sum()
-        return out
+        csum = np.concatenate([[0.0], np.cumsum(draws)])
+        return csum[idx[1:]] - csum[idx[:-1]]
 
 
 def _nb_sample(rng: np.random.Generator, mean: np.ndarray | float, dispersion: float,
