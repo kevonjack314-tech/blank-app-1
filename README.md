@@ -124,3 +124,16 @@ scripts/
 All public, via [nflverse](https://github.com/nflverse/nflverse-data): play-by-play
 and FTN charting (2022–2025), snap counts, depth charts, rosters, injury reports,
 and schedules with closing market lines.
+
+**Preseason is never used.** Starters play a series and sit, most snaps go to
+players who will not make the roster, and the play-calling is vanilla by design.
+nflverse does not ship preseason play-by-play today, but the filter is enforced
+regardless so a feed change cannot contaminate the model later.
+
+**Postseason is off by default** — not because it is unserious, but because only
+fourteen teams have any, which would hand extra sample to teams that were already
+good. Flip `INCLUDE_POSTSEASON` in `config.py` to include it.
+
+The depth chart is the one preseason-shaped input, and deliberately so: it states
+intended role rather than measuring performance. It is also the most fragile
+input in the model, since roles move through cutdowns.

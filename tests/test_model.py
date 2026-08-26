@@ -350,3 +350,57 @@ def test_wind_shifts_volume_toward_the_run():
     assert windy["pass_rate"] < calm["pass_rate"]
     assert windy["rb_carries"] > calm["rb_carries"]
     assert windy["expected_off_td"] < calm["expected_off_td"]
+
+
+# --------------------------------------------------------- season-type policy
+def _mixed_season_plays():
+    n = 4
+    return pd.DataFrame({
+        "season_type": ["PRE", "REG", "POST", "PRE"],
+        "posteam": ["AAA"] * n, "defteam": ["BBB"] * n,
+        "play_type": ["run"] * n, "special": [0] * n,
+        "qb_kneel": [0] * n, "qb_spike": [0] * n,
+        "wp": [0.5] * n, "down": [1] * n, "pass": [0] * n, "rush": [1] * n,
+        "qb_dropback": [0] * n, "qb_scramble": [0] * n,
+        "yards_gained": [4] * n, "yardline_100": [50] * n,
+        "game_id": [f"g{i}" for i in range(n)], "play_id": range(n),
+    })
+
+
+def test_preseason_is_always_excluded():
+    """Preseason must never reach the model, even if a feed starts shipping it."""
+    out = schemes.prepare_plays(_mixed_season_plays())
+    assert "PRE" not in set(out["season_type"])
+    # And it stays excluded even when postseason is explicitly requested.
+    out2 = schemes.prepare_plays(_mixed_season_plays(), include_postseason=True)
+    assert "PRE" not in set(out2["season_type"])
+
+
+def test_postseason_is_off_by_default_and_opt_in():
+    default = schemes.prepare_plays(_mixed_season_plays())
+    assert set(default["season_type"]) == {"REG"}
+    opted_in = schemes.prepare_plays(_mixed_season_plays(), include_postseason=True)
+    assert set(opted_in["season_type"]) == {"REG", "POST"}
+
+
+def test_allowed_season_types_never_includes_preseason():
+    from nflproj import config as cfg
+    for flag in (True, False, None):
+        allowed = cfg.allowed_season_types(flag)
+        assert not any(x in allowed for x in cfg.EXCLUDED_SEASON_TYPES)
+        assert "REG" in allowed
+
+
+def test_availability_ignores_non_regular_season_snaps():
+    snaps = pd.DataFrame({
+        "game_type": ["REG", "REG", "PRE", "WC"],
+        "season": [2025] * 4, "team": ["AAA"] * 4,
+        "game_id": ["a", "b", "c", "d"],
+        "pfr_player_id": ["P1"] * 4,
+        "offense_snaps": [50, 50, 50, 50], "offense_pct": [0.9] * 4,
+    })
+    players = pd.DataFrame({"gsis_id": ["00-1"], "pfr_id": ["P1"]})
+    out = av.player_availability(snaps, players)
+    # Two regular-season games out of two counted; the other rows are dropped.
+    assert int(out["games"].iloc[0]) == 2
+    assert int(out["team_games"].iloc[0]) == 2

@@ -26,6 +26,10 @@ MIN_N = 60
 
 def build() -> pd.DataFrame:
     g = data.games()
+    # Regular season only. Playoff games have their own dynamics - neutral
+    # sites, no divisional structure, only good teams - and preseason tells you
+    # nothing at all.
+    g = g[g["game_type"].astype(str).str.upper() == "REG"]
     g = g[g["home_score"].notna() & g["spread_line"].notna()].copy()
     climate = V.home_climate(g)
     g = V.game_context(g, climate)

@@ -34,6 +34,34 @@ Charting is what makes scheme measurable rather than inferred. Without it you
 can see that a team ran the ball; with it you can see that they ran it from
 shotgun, out of jet motion, to the right edge.
 
+## Which games count as evidence
+
+**Preseason is excluded unconditionally**, and that is not configurable.
+Starters play a series and sit, most snaps go to players who will not make the
+roster, play-calling is deliberately vanilla, and nobody is trying to win. It
+measures how individual players look in isolation, not how a team will operate
+in September — so weighting it at all would import noise dressed as signal.
+
+nflverse does not currently publish preseason play-by-play, so today this filter
+removes nothing. It is enforced anyway: if a future feed change starts shipping
+preseason rows, they must not quietly enter the model. A test asserts preseason
+stays out even when postseason is explicitly requested.
+
+**Postseason is excluded by default**, for a different reason. It is not
+unrepresentative — it is the most serious football played — but it is
+*asymmetric*. Only fourteen teams have any, so including it hands extra sample
+to teams that were already good, gathered against stronger opponents in
+higher-leverage scripts, and gives everyone else nothing. That is a bias in the
+comparison between teams rather than a bias in any one team's numbers. Set
+`INCLUDE_POSTSEASON = True` in `config.py` to use it.
+
+The one place preseason legitimately shows up is the **depth chart**, which is
+refreshed through August. That is a statement of intended role, not a
+performance measurement, and intended role is exactly what the usage model
+needs. It is also the model's most fragile input: chart positions move through
+cutdowns and into September, and a stale chart is the likeliest cause of a badly
+wrong player projection.
+
 ## Scheme fingerprints
 
 Each team-season reduces to a tendency vector: early-down pass rate, pass rate

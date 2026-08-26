@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .config import PRIOR_STRENGTH, normalize_team
+from .config import PRIOR_STRENGTH, allowed_season_types, normalize_team
 
 # Plays that reflect deliberate play-calling rather than clock management.
 NEUTRAL_WP = (0.20, 0.80)
@@ -39,9 +39,28 @@ def _rate(numer: float, denom: float, prior: float, strength: float) -> float:
     return float((numer + prior * strength) / (denom + strength))
 
 
-def prepare_plays(pbp: pd.DataFrame, charting: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Filter to real scrimmage plays and attach charting flags."""
+def prepare_plays(pbp: pd.DataFrame, charting: pd.DataFrame | None = None,
+                  include_postseason: bool | None = None) -> pd.DataFrame:
+    """Filter to real scrimmage plays and attach charting flags.
+
+    Preseason is dropped unconditionally: starters play a series and sit, the
+    play-calling is deliberately vanilla, and most snaps go to players who will
+    not be on the roster. Postseason is dropped by default because only some
+    teams have any, which would hand extra sample to teams that were already
+    good.
+    """
     df = pbp.copy()
+
+    if "season_type" in df.columns:
+        allowed = allowed_season_types(include_postseason)
+        df = df[df["season_type"].astype(str).str.upper().isin(allowed)]
+    elif "game_type" in df.columns:
+        allowed = allowed_season_types(include_postseason)
+        gt = df["game_type"].astype(str).str.upper()
+        # Playoff rounds are labelled individually in some feeds.
+        post_rounds = {"WC", "DIV", "CON", "SB"}
+        keep = gt.eq("REG") | (gt.isin(post_rounds) if "POST" in allowed else False)
+        df = df[keep]
     for col in ("posteam", "defteam"):
         if col in df.columns:
             df[col] = df[col].map(normalize_team)

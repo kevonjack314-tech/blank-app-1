@@ -56,7 +56,10 @@ def player_availability(snaps: pd.DataFrame, players: pd.DataFrame) -> pd.DataFr
     if snaps is None or snaps.empty:
         return pd.DataFrame(columns=["player_id", "season", "availability", "snap_pct", "games"])
 
-    s = snaps[snaps.get("game_type", "REG") == "REG"].copy()
+    # Regular season only: preseason snap counts describe a different sport,
+    # and playoff snaps exist for only fourteen teams.
+    gt = snaps["game_type"].astype(str).str.upper() if "game_type" in snaps.columns else None
+    s = (snaps[gt.eq("REG")] if gt is not None else snaps).copy()
     s["team"] = s["team"].map(normalize_team)
     team_games = s.groupby(["season", "team"])["game_id"].nunique().rename("team_games").reset_index()
 

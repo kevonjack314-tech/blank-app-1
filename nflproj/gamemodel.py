@@ -145,7 +145,10 @@ def fit_scoring_map(plays: pd.DataFrame, games: pd.DataFrame,
 
     Regresses each team-game's actual points on the rating edge it brought into
     that game, giving the conversion from EPA per play to points on the board.
+    Fitted on regular-season games only, to match the games being predicted.
     """
+    if "game_type" in games.columns:
+        games = games[games["game_type"].astype(str).str.upper() == "REG"]
     pts = pd.concat([
         games.rename(columns={"home_team": "team", "home_score": "points",
                               "away_team": "opp", "away_score": "opp_points"})
