@@ -1,0 +1,406 @@
+"""Invariant tests for the projection chain.
+
+These guard the properties that make the model correct rather than merely
+runnable: that scheme transfer respects personnel, that shares add up, that
+availability shifts the distribution the right way, and that nothing reads a
+season it is supposed to be predicting.
+"""
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from nflproj import availability as av
+from nflproj import coaches, playbook, projections as pj, schemes, usage as um
+
+
+# --------------------------------------------------------------------- rates
+def test_shrinkage_moves_toward_prior_on_small_samples():
+    prior = 0.5
+    strong = schemes._rate(90, 100, prior, strength=10)   # plenty of evidence
+    weak = schemes._rate(9, 10, prior, strength=100)      # almost none
+    assert strong > weak
+    assert abs(weak - prior) < abs(strong - prior)
+
+
+def test_rate_falls_back_to_prior_without_denominator():
+    assert schemes._rate(0, 0, 0.42, strength=50) == pytest.approx(0.42)
+
+
+# ------------------------------------------------------------------- volume
+def test_expected_tds_rise_with_implied_points():
+    assert pj.expected_offensive_tds(31) > pj.expected_offensive_tds(17)
+
+
+def test_expected_tds_never_negative_for_shutout_scripts():
+    assert pj.expected_offensive_tds(0) > 0
+
+
+def test_favoured_teams_are_projected_to_throw_less():
+    scheme = pd.Series({
+        "plays_per_game": 63, "early_down_pass_rate": 0.55, "sack_rate_allowed": 0.06,
+        "scramble_rate": 0.06, "qb_designed_run_rate": 0.03, "rz_pass_rate": 0.52,
+        "g2g_run_rate": 0.55, "sec_per_play": 31, "adot": 8.0,
+    })
+    favoured = pj.team_volume(scheme, pj.GameContext("X", total_line=45, spread_line=+9))
+    trailing = pj.team_volume(scheme, pj.GameContext("X", total_line=45, spread_line=-9))
+    assert favoured["pass_rate"] < trailing["pass_rate"]
+    # A favourite is still expected to score more.
+    assert favoured["expected_off_td"] > trailing["expected_off_td"]
+
+
+def test_sampler_rejects_non_finite_volume():
+    rng = np.random.default_rng(0)
+    with pytest.raises(ValueError):
+        pj._nb_sample(rng, np.nan, 1.5, 10)
+
+
+# ------------------------------------------------------------ scheme transfer
+def _fake_fingerprints():
+    traits = {t: 0.5 for t in schemes.OFFENSE_IDENTITY}
+    rows = []
+    for season in (2024, 2025):
+        for team, bump in (("AAA", 0.0), ("BBB", 0.3)):
+            r = {"season": season, "team": team, "side": "offense"}
+            r.update({k: v + bump for k, v in traits.items()})
+            rows.append(r)
+    return pd.DataFrame(rows)
+
+
+def test_new_coach_pulls_projection_toward_their_previous_team():
+    fp = _fake_fingerprints()
+    league = fp.select_dtypes(np.number).mean()
+    staff = coaches.Staff(
+        team="AAA", play_caller="OC", continuity=False, confidence="high",
+        oc={"name": "Someone", "new": True,
+            "prior": [{"team": "BBB", "seasons": [2024, 2025], "role": "OC"}]},
+    )
+    out = coaches.project_fingerprint("AAA", staff, fp, "offense", league, anchor_season=2025)
+    baseline = fp[(fp.team == "AAA") & (fp.season == 2025)]["motion_rate"].iloc[0]
+    source = fp[(fp.team == "BBB") & (fp.season == 2025)]["motion_rate"].iloc[0]
+    assert baseline < out["projected"]["motion_rate"] < source
+    assert out["weights"]["coach"] > 0
+
+
+def test_continuity_staff_stays_on_its_own_baseline():
+    fp = _fake_fingerprints()
+    league = fp.select_dtypes(np.number).mean()
+    staff = coaches.Staff(team="AAA", continuity=True)
+    out = coaches.project_fingerprint("AAA", staff, fp, "offense", league, anchor_season=2025)
+    assert out["weights"]["coach"] == 0
+    assert out["weights"]["team"] > out["weights"]["league"]
+
+
+def test_coach_prior_never_reads_a_future_season():
+    """A backtest anchored on 2024 must not see 2025, even if it is in the table."""
+    fp = _fake_fingerprints()
+    coach = {"prior": [{"team": "BBB", "seasons": [2024, 2025], "role": "OC"}]}
+    _, _, labels = coaches.coach_prior_fingerprint(
+        coach, fp, "offense", schemes.OFFENSE_IDENTITY, anchor_season=2024)
+    assert labels and all("2025" not in l for l in labels)
+
+
+# ------------------------------------------------------------------- usage
+def _usage_frame(team="AAA", carry_share=0.55, seasons=(2024, 2025)):
+    return pd.DataFrame([
+        {"player_id": "P1", "season": s, "team": team, "carry_share": carry_share,
+         "target_share": 0.10, "goalline_share": 0.5, "carries": 250, "targets": 50,
+         "goalline_carries": 20}
+        for s in seasons
+    ])
+
+
+def test_share_regresses_to_role_prior_when_player_is_new_to_the_team():
+    u = _usage_frame(team="OLD")
+    same, _ = um.project_share(u, "P1", "RB", 1, "carry", current_team="OLD")
+    moved, _ = um.project_share(u, "P1", "RB", 1, "carry", current_team="NEW",
+                                role_pull=um.role_pull_for(u, "P1", "RB", 1, "NEW", "carry"))
+    prior = um.CARRY_SHARE_PRIOR[("RB", 1)]
+    assert abs(moved - prior) < abs(same - prior)
+
+
+def test_demotion_on_the_depth_chart_lowers_projected_share():
+    u = _usage_frame(team="AAA")
+    as_rb1, _ = um.project_share(u, "P1", "RB", 1, "carry", current_team="AAA")
+    pull = um.role_pull_for(u, "P1", "RB", 2, "AAA", "carry")
+    as_rb2, _ = um.project_share(u, "P1", "RB", 2, "carry", current_team="AAA", role_pull=pull)
+    assert as_rb2 < as_rb1
+
+
+def test_unknown_player_falls_back_to_the_role_prior():
+    share, evidence = um.project_share(pd.DataFrame(), None, "WR", 1, "target")
+    assert share == pytest.approx(um.TARGET_SHARE_PRIOR[("WR", 1)])
+    assert evidence == 0.0
+
+
+def test_qb_continuity_counts_shared_targets():
+    plays = pd.DataFrame({
+        "passer_player_id": ["QB1"] * 30 + ["QB2"] * 30,
+        "receiver_player_id": ["WR1"] * 60,
+    })
+    n, conf = um.qb_continuity(plays, "QB1", "WR1")
+    assert n == 30
+    assert 0 < conf < 1
+    assert um.qb_continuity(plays, None, "WR1") == (0, 0.0)
+
+
+# ------------------------------------------------------------- availability
+def test_availability_prior_applies_without_player_history():
+    p, snap = av.project_availability(pd.DataFrame(), None, "WR", 1)
+    assert p == pytest.approx(av.AVAILABILITY_PRIOR[("WR", 1)])
+    assert 0 < snap <= 1
+
+
+def test_out_designation_zeroes_availability():
+    p, _ = av.project_availability(pd.DataFrame(), None, "RB", 1, injury_status="Out")
+    assert p == 0.0
+
+
+def test_availability_lowers_expectation_but_not_the_active_line():
+    rng = np.random.default_rng(3)
+    proj = pj.PlayerProjection(
+        player_id="P", name="P", team="AAA", position="WR", depth_rank=1,
+        samples={"rec_yards": np.full(20000, 60.0), "total_td": np.ones(20000)},
+    )
+    proj.apply_availability(0.5, rng)
+    assert proj.conditional["rec_yards"].mean() == pytest.approx(60.0)
+    assert proj.samples["rec_yards"].mean() == pytest.approx(30.0, rel=0.05)
+    # The zeros are a real point mass, not a uniform shrink.
+    assert (proj.samples["rec_yards"] == 0).mean() == pytest.approx(0.5, abs=0.02)
+
+
+def test_prob_over_distinguishes_the_two_views():
+    rng = np.random.default_rng(4)
+    proj = pj.PlayerProjection(
+        player_id="P", name="P", team="AAA", position="WR", depth_rank=1,
+        samples={"rec_yards": np.full(10000, 60.0)},
+    )
+    proj.apply_availability(0.5, rng)
+    assert proj.prob_over("rec_yards", 50, conditional=True) == pytest.approx(100.0)
+    assert proj.prob_over("rec_yards", 50) == pytest.approx(50.0, abs=2)
+
+
+# ---------------------------------------------------------------- sampling
+def test_touch_sampler_preserves_skew_of_real_outcomes():
+    plays = pd.DataFrame({
+        "is_designed_run": [True] * 1000,
+        "yards_gained": [2.0] * 950 + [60.0] * 50,
+        "receiver_player_id": [None] * 1000,
+        "complete_pass": [0] * 1000,
+        "air_yards": [np.nan] * 1000,
+    })
+    s = pj.TouchSampler(plays, rng=np.random.default_rng(1))
+    totals = s.sample_rush(np.full(400, 10))
+    # A normal approximation would never produce this much right-tail mass.
+    assert totals.max() > totals.mean() * 1.8
+    assert totals.mean() == pytest.approx(10 * (2 * .95 + 60 * .05), rel=0.12)
+
+
+def test_zero_touches_produce_zero_yards():
+    plays = pd.DataFrame({
+        "is_designed_run": [True] * 50, "yards_gained": [4.0] * 50,
+        "receiver_player_id": [None] * 50, "complete_pass": [0] * 50,
+        "air_yards": [np.nan] * 50,
+    })
+    s = pj.TouchSampler(plays, rng=np.random.default_rng(2))
+    assert s.sample_rush(np.zeros(10, dtype=int)).sum() == 0
+
+
+# ---------------------------------------------------------------- playbook
+def test_signature_concepts_ignore_sacks_and_scrambles():
+    n = 120
+    plays = pd.DataFrame({
+        "posteam": ["AAA"] * n, "season": [2025] * n, "play_id": range(n),
+        "shotgun": [1] * n, "is_dropback": [True] * n,
+        "sack": [1] * 60 + [0] * 60, "qb_scramble": [0] * n,
+        "pass_length": ["short"] * n, "pass_location": ["left"] * n,
+        "run_location": [None] * n, "run_gap": [None] * n,
+        "epa": [-2.0] * 60 + [0.5] * 60, "yards_gained": [-7.0] * 60 + [8.0] * 60,
+        "success": [0] * 60 + [1] * 60,
+        "is_motion": [False] * n, "is_play_action": [False] * n,
+        "is_rpo": [False] * n, "is_screen_pass": [False] * n,
+    })
+    out = playbook.signature_concepts(plays, "AAA", seasons=(2025,), min_plays=10)
+    assert not out.empty
+    # Only the 60 non-sack plays should survive.
+    assert out["plays"].sum() == 60
+    assert (out["epa"] > 0).all()
+
+
+# --------------------------------------------------------------- game model
+def _rating_frame():
+    return pd.DataFrame([
+        {"season": s, "team": t, "off_rating": o, "def_rating": d, "plays": 1000}
+        for s in (2024, 2025)
+        for t, o, d in [("AAA", 0.10, 0.05), ("BBB", -0.10, -0.05), ("CCC", 0.0, 0.0)]
+    ])
+
+
+def test_ratings_regress_toward_mean_and_recentre():
+    from nflproj import gamemodel as gmod
+    proj = gmod.project_ratings(_rating_frame(), anchor_season=2025)
+    # Offense persists more than defense, so it should retain more of its edge.
+    a = proj[proj.team == "AAA"].iloc[0]
+    assert 0 < a.off_rating < 0.10
+    assert 0 < a.def_rating < 0.05
+    assert abs(a.off_rating) / 0.10 > abs(a.def_rating) / 0.05
+    assert proj["off_rating"].mean() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_new_staff_shrinks_a_team_further():
+    from nflproj import gamemodel as gmod
+    base = gmod.project_ratings(_rating_frame(), anchor_season=2025)
+    pen = gmod.project_ratings(_rating_frame(), anchor_season=2025,
+                               coach_penalty={"AAA": 0.5})
+    b = base[base.team == "AAA"].iloc[0].off_rating
+    p = pen[pen.team == "AAA"].iloc[0].off_rating
+    assert abs(p) < abs(b)
+
+
+def test_home_field_favours_the_home_team():
+    from nflproj import gamemodel as gmod
+    proj = pd.DataFrame([{"team": "AAA", "off_rating": 0.0, "def_rating": 0.0},
+                         {"team": "BBB", "off_rating": 0.0, "def_rating": 0.0}])
+    sc = {"intercept": 22.0, "slope": 40.0, "hfa": 2.0,
+          "margin_sigma": 13.0, "total_sigma": 13.0}
+    g = gmod.predict_game("AAA", "BBB", proj, sc, n_sims=40000)
+    assert g.margin == pytest.approx(2.0, abs=0.01)
+    assert 0.52 < g.home_win_prob < 0.58
+
+
+def test_margin_variance_is_not_understated_by_shared_scoring():
+    """The two teams' scores are correlated; margin spread must stay calibrated."""
+    from nflproj import gamemodel as gmod
+    proj = pd.DataFrame([{"team": "AAA", "off_rating": 0.0, "def_rating": 0.0},
+                         {"team": "BBB", "off_rating": 0.0, "def_rating": 0.0}])
+    sc = {"intercept": 22.0, "slope": 40.0, "hfa": 0.0,
+          "margin_sigma": 13.0, "total_sigma": 10.0}
+    rng = np.random.default_rng(11)
+    g = gmod.predict_game("AAA", "BBB", proj, sc, n_sims=200000, rng=rng)
+    # A coin-flip game should sit at even money, not drift confident.
+    assert g.home_win_prob == pytest.approx(0.50, abs=0.01)
+
+
+def test_spread_edge_is_signed_against_the_market():
+    from nflproj import gamemodel as gmod
+    proj = pd.DataFrame([{"team": "AAA", "off_rating": 0.0, "def_rating": 0.0},
+                         {"team": "BBB", "off_rating": 0.0, "def_rating": 0.0}])
+    sc = {"intercept": 22.0, "slope": 40.0, "hfa": 6.0,
+          "margin_sigma": 13.0, "total_sigma": 10.0}
+    g = gmod.predict_game("AAA", "BBB", proj, sc, n_sims=2000, market_spread=3.0)
+    assert g.spread_edge == pytest.approx(3.0, abs=0.01)   # model likes home by 3 more
+    assert gmod.predict_game("AAA", "BBB", proj, sc, n_sims=2000).spread_edge is None
+
+
+# ------------------------------------------------------------- environment
+def test_wind_only_counts_outdoors_and_above_the_calm_threshold():
+    from nflproj import venues as ven
+    assert ven.environment({"roof": "dome", "wind": 30, "div_game": 0})["wind_excess"] == 0
+    assert ven.environment({"roof": "outdoors", "wind": 5, "div_game": 0})["wind_excess"] == 0
+    assert ven.environment({"roof": "outdoors", "wind": 20, "div_game": 0})["wind_excess"] == 12
+
+
+def test_wind_suppresses_scoring_and_passing():
+    from nflproj import venues as ven
+    calm = ven.environment({"roof": "outdoors", "wind": 4, "div_game": 0})
+    windy = ven.environment({"roof": "outdoors", "wind": 25, "div_game": 0})
+    assert windy["total_delta"] < calm["total_delta"]
+    assert windy["pass_yards_mult"] < 1.0
+    assert windy["deep_rate_mult"] < windy["pass_yards_mult"]   # deep shots suffer most
+    assert windy["pass_rate_delta"] < 0                          # teams throw less
+
+
+def test_unknown_weather_produces_no_adjustment():
+    """Future games have no weather; the model must not invent one."""
+    from nflproj import venues as ven
+    e = ven.environment({"roof": "outdoors", "wind": np.nan, "div_game": 0})
+    assert e["total_delta"] == pytest.approx(0.0)
+    assert e["pass_yards_mult"] == 1.0
+
+
+def test_roof_and_divisional_apply_without_weather():
+    from nflproj import venues as ven
+    dome = ven.environment({"roof": "dome", "wind": np.nan, "div_game": 0})
+    div = ven.environment({"roof": "outdoors", "wind": np.nan, "div_game": 1})
+    assert dome["total_delta"] > 0      # domes score more
+    assert div["total_delta"] < 0       # divisional games score less
+
+
+def test_travel_is_reported_but_never_applied():
+    from nflproj import venues as ven
+    t = ven.travel_context("SEA", "MIA", 13.0)
+    assert t["travel_miles"] > 2500
+    assert t["tz_shift"] == -3            # Seattle travels east... to Eastern time
+    assert t["away_body_clock"] == 10.0   # 1pm ET is 10am to a Pacific body clock
+    assert t["applied_to_projection"] is False
+    assert "total_delta" not in t         # carries no scoring weight
+
+
+def test_wind_shifts_volume_toward_the_run():
+    from nflproj import venues as ven
+    scheme = pd.Series({
+        "plays_per_game": 63, "early_down_pass_rate": 0.55, "sack_rate_allowed": 0.06,
+        "scramble_rate": 0.06, "qb_designed_run_rate": 0.03, "rz_pass_rate": 0.52,
+        "g2g_run_rate": 0.55, "sec_per_play": 31, "adot": 8.0,
+    })
+    gc = pj.GameContext("X", total_line=45, spread_line=0)
+    calm = pj.team_volume(scheme, gc, env=ven.environment({"roof": "outdoors", "wind": 3, "div_game": 0}))
+    windy = pj.team_volume(scheme, gc, env=ven.environment({"roof": "outdoors", "wind": 25, "div_game": 0}))
+    assert windy["pass_rate"] < calm["pass_rate"]
+    assert windy["rb_carries"] > calm["rb_carries"]
+    assert windy["expected_off_td"] < calm["expected_off_td"]
+
+
+# --------------------------------------------------------- season-type policy
+def _mixed_season_plays():
+    n = 4
+    return pd.DataFrame({
+        "season_type": ["PRE", "REG", "POST", "PRE"],
+        "posteam": ["AAA"] * n, "defteam": ["BBB"] * n,
+        "play_type": ["run"] * n, "special": [0] * n,
+        "qb_kneel": [0] * n, "qb_spike": [0] * n,
+        "wp": [0.5] * n, "down": [1] * n, "pass": [0] * n, "rush": [1] * n,
+        "qb_dropback": [0] * n, "qb_scramble": [0] * n,
+        "yards_gained": [4] * n, "yardline_100": [50] * n,
+        "game_id": [f"g{i}" for i in range(n)], "play_id": range(n),
+    })
+
+
+def test_preseason_is_always_excluded():
+    """Preseason must never reach the model, even if a feed starts shipping it."""
+    out = schemes.prepare_plays(_mixed_season_plays())
+    assert "PRE" not in set(out["season_type"])
+    # And it stays excluded even when postseason is explicitly requested.
+    out2 = schemes.prepare_plays(_mixed_season_plays(), include_postseason=True)
+    assert "PRE" not in set(out2["season_type"])
+
+
+def test_postseason_is_off_by_default_and_opt_in():
+    default = schemes.prepare_plays(_mixed_season_plays())
+    assert set(default["season_type"]) == {"REG"}
+    opted_in = schemes.prepare_plays(_mixed_season_plays(), include_postseason=True)
+    assert set(opted_in["season_type"]) == {"REG", "POST"}
+
+
+def test_allowed_season_types_never_includes_preseason():
+    from nflproj import config as cfg
+    for flag in (True, False, None):
+        allowed = cfg.allowed_season_types(flag)
+        assert not any(x in allowed for x in cfg.EXCLUDED_SEASON_TYPES)
+        assert "REG" in allowed
+
+
+def test_availability_ignores_non_regular_season_snaps():
+    snaps = pd.DataFrame({
+        "game_type": ["REG", "REG", "PRE", "WC"],
+        "season": [2025] * 4, "team": ["AAA"] * 4,
+        "game_id": ["a", "b", "c", "d"],
+        "pfr_player_id": ["P1"] * 4,
+        "offense_snaps": [50, 50, 50, 50], "offense_pct": [0.9] * 4,
+    })
+    players = pd.DataFrame({"gsis_id": ["00-1"], "pfr_id": ["P1"]})
+    out = av.player_availability(snaps, players)
+    # Two regular-season games out of two counted; the other rows are dropped.
+    assert int(out["games"].iloc[0]) == 2
+    assert int(out["team_games"].iloc[0]) == 2
