@@ -17,7 +17,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from nflproj import (availability as av, board, coaches, data, personnel, pipeline,
-                     projections as pj, schemes, usage as um)
+                     projections as pj, schemes, usage as um, venues as V)
 
 TRAIN = (2022, 2023, 2024)
 TEST = 2025
@@ -31,7 +31,7 @@ def build_holdout_context():
     snaps = data.snap_counts(TRAIN)
     players_df = data.players()
     return pipeline.Context(
-        plays=plays, raw_pbp=raw, fingerprints=fp, depth=depth,
+        plays=plays, fingerprints=fp, depth=depth,
         chart=personnel.latest_depth_chart(depth),
         fronts=personnel.base_defensive_front(depth),
         qb_profiles=personnel.qb_profiles(plays),
@@ -82,6 +82,14 @@ def run(weeks=range(1, 19), n_sims=4000) -> pd.DataFrame:
 
     rows = []
     for wk in weeks:
+        # Use the depth chart as it stood going into this week. Reusing an
+        # end-of-season chart credits late-emerging players with a role they
+        # did not yet have, which is hindsight leaking into the test.
+        wk_depth = data.depth_chart_for_week(TEST, int(wk), ctx.games)
+        wk_chart = personnel.latest_depth_chart(wk_depth)
+        if wk_chart.empty:
+            wk_chart = ctx.chart
+        wk_envs = board.game_environments(ctx.games, TEST, int(wk))
         gcs = board.game_contexts(ctx.games, TEST, int(wk))
         wk_games = sched[sched["week"] == wk]
         gid = {}
@@ -90,7 +98,8 @@ def run(weeks=range(1, 19), n_sims=4000) -> pd.DataFrame:
             gid[r["away_team"]] = r["game_id"]
         for team, gc in gcs.items():
             res = board.project_team(team, ctx, pm, usage_hist, sampler, gc,
-                                     league_def, n_sims=n_sims, seed=int(wk) * 100)
+                                     league_def, n_sims=n_sims, seed=int(wk) * 100,
+                                     env=wk_envs.get(team), chart=wk_chart)
             for r in res:
                 rows.append({
                     "week": wk, "game_id": gid.get(team), "team": team,

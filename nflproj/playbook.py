@@ -134,11 +134,18 @@ def signature_concepts(plays: pd.DataFrame, team: str, seasons: tuple | None = N
         # Pass depth carries the scheme signal; left/right mostly splits the
         # sample without adding meaning, so runs keep their gap and passes
         # keep their depth.
+        #
+        # These columns are stored as categories to keep the frame small, and a
+        # category will not accept a fill value it does not already know about.
+        # Convert to plain strings first.
+        def _text(col: str, missing: str = "?") -> pd.Series:
+            return d[col].astype("object").fillna(missing).astype(str)
+
         action = np.where(
             d["is_dropback"],
-            " pass (" + d["pass_length"].fillna("?").astype(str) + ")",
-            " run " + d["run_location"].fillna("?").astype(str)
-            + np.where(d["run_gap"].notna(), "/" + d["run_gap"].fillna("").astype(str), ""),
+            " pass (" + _text("pass_length") + ")",
+            " run " + _text("run_location")
+            + np.where(d["run_gap"].notna(), "/" + _text("run_gap", ""), ""),
         )
         parts.append(pd.Series(action, index=d.index))
         return pd.concat(parts, axis=1).sum(axis=1).str.replace(r"\s+", " ", regex=True).str.strip()

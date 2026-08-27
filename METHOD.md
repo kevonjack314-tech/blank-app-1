@@ -145,6 +145,28 @@ position across 2022–2025 gives WR1 = 23.1% of targets, RB1 = 53.9% of carries
 RB1 = 55.3% of goal-line carries, and QB1 = 11.6% of goal-line carries — which is
 why mobile quarterbacks eat into their lead back's rushing touchdowns.
 
+**Air-yards share** carries the majority of the target projection. Measured
+year-over-year, it is the most stable usage signal available:
+
+| metric | stability |
+| --- | --- |
+| Share of intended air yards | **0.727** |
+| Avg separation | 0.547 |
+| Target share | ~0.55 |
+| Catch % | 0.432 |
+| YAC above expected | 0.256 |
+
+Air yards are targets multiplied by depth, so dividing a projected air-yards
+share by a receiver's own depth of target recovers an independent target count —
+anchored to a stronger role signal than target share alone. It also encodes
+*what kind* of receiver someone is: Alec Pierce took 42% of Indianapolis's air
+yards on 18% of its targets, which is a different asset from a possession
+receiver with the same target share.
+
+**Draft capital** is the fallback for a player with no NFL sample, and it fades
+to nothing the moment real usage exists. **Separation** nudges catch rate, being
+a more stable skill signal than catch rate itself.
+
 **Quarterback continuity** is tracked but deliberately not used to move the mean
 much. When a receiver has barely played with his projected quarterback, that
 pairing is *unmeasured*, not bad — so the model widens its regression toward the
@@ -249,6 +271,58 @@ seasons. The market shows the same apparent compression in this sample, which
 suggests it is a property of these two seasons rather than a fixable model
 defect. It was left out.
 
+## Coverage
+
+Front and pressure are only half a defensive call. nflverse participation
+charting supplies the other half — man or zone, and the shell — labelled on
+roughly every charted pass play (about half of all snaps). It also carries the
+route each receiver ran and whether the quarterback was pressured.
+
+This separates defences that the front-based fingerprint treats as similar.
+Minnesota blitzes on 46% of dropbacks but plays man on only 18% of snaps and
+sits two-high 59% of the time: pressure with coverage behind it. Denver plays
+man on 45%, single-high on 61%, and Cover 0 on 6.5%. Those are opposite
+philosophies that a blitz rate alone would not distinguish.
+
+The same data measures how an offence fares against each structure, which turns
+a matchup into a specific read — *Kansas City are better against zone (+0.150
+EPA against −0.063 versus man) and Denver play man on 45% of snaps against a 31%
+league rate* — rather than a generic strength comparison. Route distributions and
+offensive personnel groupings (11, 12, 21) come from the same feed.
+
+## Blocking versus the back
+
+A back's yards per carry blends two things that behave nothing alike:
+
+| | year-over-year correlation |
+| --- | --- |
+| Yards **before** contact per carry (blocking) | **0.433** |
+| Yards **after** contact per carry (the back) | 0.106 |
+
+Blocking persists; broken tackles largely do not. Regressing raw yards per carry
+toward a league mean treats them as one quantity and discards the half that is
+actually predictable. They are now projected separately — the line's
+contribution from the team, the back's from the player with heavy regression —
+and reported separately, so a projection can say whether a back is producing
+behind good blocking or creating on his own. Only one of those travels if he
+changes teams.
+
+The spread is not small. In 2025 Chicago generated 3.31 yards before contact per
+carry and Las Vegas 1.63.
+
+## Kicking
+
+Field goal probability is a logistic in distance fitted on 4,325 regular-season
+attempts: `logit(make) = 5.915 − 0.0985 × distance`, putting a 25-yarder at 97%,
+a 45-yarder at 82% and a 58-yarder at 55%. A kicker's own record moves this only
+modestly — a season is about thirty attempts, which is not much signal.
+
+Wind is **not** applied to accuracy. Controlling for distance the coefficient is
+−0.017 per mph with a bootstrap *t* of −1.0 and a 95% interval spanning zero, on
+only ~200 attempts in 15+ mph conditions. Coaches also attempt shorter kicks in
+wind, absorbing part of the effect at the decision level. Wind still reduces a
+kicker's output, through fewer trips into range rather than worse kicking.
+
 ## Situational context: travel, weather, and familiarity
 
 Four factors were tested — travel distance and time zones, body clock at
@@ -327,12 +401,15 @@ game week.
 - **Depth charts are preseason.** Roles change through cutdowns and into
   September, and a stale chart is the most likely source of a badly wrong player
   projection.
-- **No offensive line modelling.** Run-blocking and pass protection quality are
-  only implicit, absorbed into team efficiency and sack rate.
-- **No coverage scheme.** Charting gives pass rushers and box counts, not man
-  versus zone, so coverage-based matchup edges are out of reach here.
-- **Rookies have no NFL sample.** They inherit the prior for their depth-chart
-  role and nothing else — no combine or college translation is attempted.
+- **Offensive line quality is a rushing and pressure proxy, not a unit model.**
+  Yards before contact and pressure allowed stand in for blocking; there is no
+  per-lineman projection, so a line that loses a starter is not modelled.
+- **Coverage is charted on pass plays only**, so about half of snaps carry a
+  label, and the profiles describe last season's staff. Where a defensive
+  coordinator changed, the coverage profile is the *old* staff's and should be
+  read alongside the scheme-transfer weighting.
+- **Rookies get a role prior scaled by draft capital**, and nothing else — no
+  combine or college production translation is attempted.
 - **Market lines are only posted for part of the season.** Later weeks fall back
   to a generic game environment, which flattens strength of schedule.
 - **Defensive personnel is not projected.** Defensive scheme is carried across

@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 
 from . import availability as av
+from . import blocking as bl
+from . import kicking as kk
 from . import venues as V
 from . import projections as pj
 from . import usage as usage_mod
@@ -62,7 +64,7 @@ def project_team(
     team: str, ctx, projections_map: dict, usage_hist: pd.DataFrame,
     sampler: pj.TouchSampler, game_ctx: pj.GameContext,
     league_def: pd.Series, n_sims: int = 20000, seed: int | None = None,
-    env: dict | None = None,
+    env: dict | None = None, chart: pd.DataFrame | None = None,
 ) -> list[pj.PlayerProjection]:
     """Project every rostered skill player for one team in one game."""
     rng = np.random.default_rng(seed)
@@ -72,10 +74,13 @@ def project_team(
     opp_scheme = projections_map[opp]["offense"]["projected"] if opp in projections_map else None
     opp_def = projections_map[opp]["defense"]["projected"] if opp in projections_map else None
 
-    volume = pj.team_volume(scheme, game_ctx, opp_scheme, env=env)
+    protection = (ctx.protection or {}).get(team) if getattr(ctx, "protection", None) else None
+    volume = pj.team_volume(scheme, game_ctx, opp_scheme, env=env, protection=protection)
     adj = pj.defense_adjustment(opp_def, league_def)
 
-    chart = ctx.chart[ctx.chart["team"] == team]
+    # A caller can supply a point-in-time chart; otherwise use the latest.
+    source = ctx.chart if chart is None else chart
+    chart = source[source["team"] == team]
     results: list[pj.PlayerProjection] = []
     avail_hist = getattr(ctx, "availability", None)
     injuries = getattr(ctx, "injuries", {}) or {}
@@ -96,15 +101,22 @@ def project_team(
                 player_id=pid, name=name, team=team, usage_hist=usage_hist,
                 qb_hist=ctx.qb_profiles, volume=volume, sampler=sampler,
                 scheme=scheme, def_adj=adj, n_sims=n_sims, rng=rng, env=env,
+                protection=protection,
             ))
         else:
             shared, continuity = usage_mod.qb_continuity(ctx.plays, qb_id, pid)
+            rush_eff = None
+            if pos in ("RB", "FB") and getattr(ctx, "team_blocking", None) is not None:
+                rush_eff = bl.project_rushing_efficiency(
+                    team, pid, ctx.team_blocking, ctx.player_elusiveness)
+            sep = (ctx.separation or {}).get(pid) if getattr(ctx, "separation", None) else None
             results.append(pj.project_skill_player(
                 player_id=pid, name=name, team=team, position=pos, depth_rank=rank,
                 usage_hist=usage_hist, volume=volume, sampler=sampler,
                 scheme=scheme, def_adj=adj, n_sims=n_sims, rng=rng,
                 current_team=team, qb_shared_targets=shared, qb_continuity=continuity,
-                env=env,
+                env=env, rush_efficiency=rush_eff, separation=sep,
+                draft=getattr(ctx, "draft", None),
             ))
 
     _rebalance(results, volume)
@@ -115,10 +127,53 @@ def project_team(
         p_active, snap = av.project_availability(
             avail_hist, r.player_id, r.position, r.depth_rank,
             injury_status=injuries.get(r.player_id),
+            practice_status=(getattr(ctx, "practice", None) or {}).get(r.player_id),
         )
         r.inputs["snap_share"] = snap
         r.apply_availability(p_active, rng)
+
+    _redistribute_absent(results, volume)
     return results
+
+
+def _redistribute_absent(results: list[pj.PlayerProjection], volume: dict) -> None:
+    """Give an absent player's share to the team-mates who replace him.
+
+    Availability is applied per player independently, which is right for that
+    player's own line but wrong for the offence: a team whose WR1 is inactive
+    does not throw twenty percent fewer passes, it throws the same number to
+    somebody else. Without this step the availability discount silently deletes
+    a fifth of every team's volume, and every projection reads low.
+
+    The team's expected volume is restored by scaling the survivors up, which
+    keeps each individual's point mass at zero intact while conserving the
+    total.
+    """
+    for kind, key, stats in (
+        ("exp_targets", "team_targets", ("targets", "receptions", "rec_yards")),
+        ("exp_carries", "rb_carries", ("carries", "rush_yards")),
+    ):
+        pool = [r for r in results if kind in r.inputs and r.position != "QB"]
+        if not pool:
+            continue
+        coverage = usage_mod.CHARTED_COVERAGE["target" if kind == "exp_targets" else "carry"]
+        wanted = volume[key] * coverage
+        # What the roster is expected to absorb once absences are priced in.
+        expected = sum(r.inputs[kind] * r.p_active for r in pool)
+        if expected <= 0:
+            continue
+        factor = wanted / expected
+        if not np.isfinite(factor) or factor <= 0:
+            continue
+        # Cap the boost: one absence should not turn a WR4 into a WR1.
+        factor = float(np.clip(factor, 1.0, 1.60))
+        for r in pool:
+            for s in stats:
+                if s in r.samples:
+                    r.samples[s] = r.samples[s] * factor
+        for r in pool:
+            if "rec_yards" in r.samples and "rush_yards" in r.samples:
+                r.samples["scrimmage_yards"] = r.samples["rec_yards"] + r.samples["rush_yards"]
 
 
 def _rebalance(results: list[pj.PlayerProjection], volume: dict) -> None:
@@ -153,6 +208,32 @@ def _rebalance(results: list[pj.PlayerProjection], volume: dict) -> None:
         for r in pool:
             if "rec_yards" in r.samples and "rush_yards" in r.samples:
                 r.samples["scrimmage_yards"] = r.samples["rec_yards"] + r.samples["rush_yards"]
+
+
+def project_kicker_for(team: str, ctx, projections_map: dict,
+                       game_ctx: pj.GameContext, env: dict | None = None,
+                       n_sims: int = 20000, seed: int | None = None) -> dict | None:
+    """Kicker projection for one team-game, if a kicker is on the chart."""
+    depth = ctx.depth
+    if depth is None or depth.empty:
+        return None
+    k = depth[(depth["team"] == team) & (depth["pos_abb"] == "PK")]
+    if k.empty:
+        k = depth[(depth["team"] == team) & (depth["pos_abb"] == "K")]
+    if k.empty:
+        return None
+    k = k.sort_values("pos_rank").iloc[0]
+
+    scheme = projections_map[team]["offense"]["projected"]
+    opp = game_ctx.opponent
+    opp_scheme = projections_map[opp]["offense"]["projected"] if opp in projections_map else None
+    volume = pj.team_volume(scheme, game_ctx, opp_scheme, env=env)
+    return kk.project_kicker(
+        player_id=k.get("gsis_id"), name=k["player_name"], team=team,
+        hist=ctx.kickers if ctx.kickers is not None else pd.DataFrame(),
+        volume=volume, env=env, n_sims=n_sims,
+        rng=np.random.default_rng(seed),
+    )
 
 
 def board_frame(results: list[pj.PlayerProjection], lines: dict | None = None) -> pd.DataFrame:

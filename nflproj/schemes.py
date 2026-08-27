@@ -94,7 +94,8 @@ def prepare_plays(pbp: pd.DataFrame, charting: pd.DataFrame | None = None,
     df["explosive"] = np.where(
         df["pass"].fillna(0) > 0, df["yards_gained"] >= 20, df["yards_gained"] >= 10
     )
-    return df
+    from .data import compact
+    return compact(df)
 
 
 def _pace(df: pd.DataFrame) -> float:

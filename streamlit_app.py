@@ -5,8 +5,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from nflproj import (board, gamemodel as gm, pipeline, playbook,
-                     projections as pj, report, schemes, usage as um, venues as V)
+from nflproj import (board, coverage as cvg, data as ndata, gamemodel as gm,
+                     kicking as kk, pipeline, playbook, projections as pj,
+                     report, schemes, usage as um, venues as V)
 from nflproj.config import PROJECTION_SEASON, TEAM_NAMES, TEAMS
 
 st.set_page_config(page_title="NFL Projection Model", page_icon="🏈", layout="wide")
@@ -19,6 +20,27 @@ YARD_LINES = {
 }
 
 
+def _first_run_sync() -> None:
+    """Fetch the nflverse cache when the app starts on an empty container.
+
+    A fresh host has no data directory, so the first visitor would otherwise sit
+    through a silent multi-minute download. This shows what is happening and
+    only runs when the cache is genuinely missing.
+    """
+    from nflproj.config import RAW, HISTORY_SEASONS, PROJECTION_SEASON
+    if list(RAW.glob("pbp_*.parquet")):
+        return
+    with st.status("First run: downloading public nflverse data (~140 MB)…",
+                   expanded=True) as status:
+        st.write("This happens once. Subsequent starts read the local cache.")
+        from nflproj import data as ndata_boot
+        results = ndata_boot.sync_all(seasons=HISTORY_SEASONS,
+                                      projection_season=PROJECTION_SEASON)
+        ok = sum(1 for v in results.values() if v)
+        status.update(label=f"Downloaded {ok} of {len(results)} datasets.",
+                      state="complete", expanded=False)
+
+
 @st.cache_resource(show_spinner="Loading play-by-play, charting and depth charts…")
 def load():
     ctx = pipeline.build_context()
@@ -28,14 +50,20 @@ def load():
     anchor = int(ctx.fingerprints["season"].max())
     lg_off = schemes.league_means(ctx.fingerprints, "offense", anchor)
     lg_def = schemes.league_means(ctx.fingerprints, "defense", anchor)
+    cov_plays = cvg.attach(ctx.plays, ctx.participation)
+    cov_fp = cvg.coverage_fingerprint(cov_plays, seasons=(anchor,))
     ratings = gm.adjusted_ratings(ctx.plays)
     penalties = gm.coaching_penalties(ctx.staffs)
     team_proj = gm.project_ratings(ratings, anchor_season=anchor, coach_penalty=penalties)
     scoring = gm.fit_scoring_map(ctx.plays, ctx.games[ctx.games["season"] <= anchor], ratings)
-    return ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings, team_proj, scoring
+    return (ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings,
+            team_proj, scoring, cov_plays, cov_fp)
 
 
-ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings, team_proj, scoring = load()
+_first_run_sync()
+
+(ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings,
+ team_proj, scoring, cov_plays, cov_fp) = load()
 
 st.title("🏈 NFL Projection Model")
 st.caption(
@@ -43,9 +71,10 @@ st.caption(
     "scheme carried across coaching changes, constrained by personnel"
 )
 
-tab_board, tab_games, tab_scout, tab_matchup, tab_scheme, tab_method = st.tabs(
-    ["Projection board", "Game predictions", "Team scouting", "Matchup",
-     "Scheme explorer", "Method & limits"]
+(tab_board, tab_games, tab_scout, tab_coverage, tab_matchup, tab_scheme,
+ tab_method) = st.tabs(
+    ["Projection board", "Game predictions", "Team scouting", "Coverage",
+     "Matchup", "Scheme explorer", "Method & limits"]
 )
 
 # ---------------------------------------------------------------- projections
@@ -153,6 +182,22 @@ with tab_board:
             qshow = {k: v for k, v in qshow.items() if k and k in qbs.columns}
             st.dataframe(qbs[list(qshow)].rename(columns=qshow).round(1),
                          hide_index=True, use_container_width=True)
+
+        kick = board.project_kicker_for(team, ctx, pm, gc, env=env,
+                                        n_sims=int(n_sims), seed=int(week))
+        if kick:
+            st.subheader("Kicker")
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Kicker", kick["player"])
+            k2.metric("FG attempts", f"{np.mean(kick['samples']['fg_attempts']):.2f}")
+            k3.metric("FG made", f"{np.mean(kick['samples']['fg_made']):.2f}")
+            k4.metric("Kicking points", f"{np.mean(kick['samples']['kicking_points']):.2f}")
+            st.caption(
+                "Make probability is a logistic in distance fitted on 4,325 attempts. "
+                "Wind is deliberately not applied to accuracy - controlling for distance "
+                "the effect is not distinguishable from noise - but it suppresses scoring, "
+                "which reduces trips into range."
+            )
 
         st.subheader("Probability of clearing a line")
         stat = st.selectbox("Stat", list(YARD_LINES), index=2,
@@ -304,6 +349,71 @@ with tab_scout:
     if not rd.empty:
         st.dataframe(rd.head(12).round(3), hide_index=True, use_container_width=True)
 
+# ------------------------------------------------------------------ coverage
+with tab_coverage:
+    st.caption(
+        "What defences play behind the front, from nflverse participation charting: "
+        "man or zone, and which shell. Coverage is charted on pass plays only, so rates "
+        "are shares of charted dropbacks rather than of all snaps."
+    )
+    if cov_fp.empty:
+        st.info("Coverage charting unavailable for this season.")
+    else:
+        lg_man = cov_fp["man_rate"].mean()
+        lg_single = cov_fp["single_high_rate"].mean()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("League man rate", f"{lg_man*100:.1f}%")
+        c2.metric("League single-high", f"{lg_single*100:.1f}%")
+        c3.metric("League Cover 0", f"{cov_fp['cover0_rate'].mean()*100:.1f}%")
+
+        show = cov_fp.rename(columns={
+            "team": "Team", "charted_plays": "Charted", "man_rate": "Man",
+            "zone_rate": "Zone", "single_high_rate": "Single-high",
+            "two_high_rate": "Two-high", "cover0_rate": "Cover 0",
+            "cover1_rate": "Cover 1", "cover2_rate": "Cover 2",
+            "cover3_rate": "Cover 3", "cover4_rate": "Cover 4",
+            "cover6_rate": "Cover 6", "2man_rate": "2-man",
+            "pressure_rate": "Pressure", "epa_vs_man": "EPA vs man",
+            "epa_vs_zone": "EPA vs zone",
+        })
+        st.dataframe(show.sort_values("Man", ascending=False).round(3),
+                     hide_index=True, use_container_width=True)
+
+        ct = st.selectbox("Team detail", TEAMS, index=TEAMS.index("NYG"),
+                          format_func=lambda x: f"{x} — {TEAM_NAMES[x]}", key="cov_team")
+        d1, d2 = st.columns(2)
+        with d1:
+            st.subheader(f"{ct} defense: coverage mix")
+            prof = cvg.defense_coverage_profile(cov_plays, ct, seasons=(anchor,))
+            if not prof.empty:
+                st.dataframe(
+                    prof[["shell", "plays", "rate", "epa", "ypa", "comp_rate", "adot"]]
+                    .rename(columns={"shell": "Shell", "plays": "Plays", "rate": "Rate",
+                                     "epa": "EPA/play", "ypa": "Yds/att",
+                                     "comp_rate": "Comp%", "adot": "aDOT"}).round(3),
+                    hide_index=True, use_container_width=True)
+        with d2:
+            st.subheader(f"{ct} offense vs coverage")
+            ovc = cvg.offense_vs_coverage(cov_plays, ct, seasons=(anchor,))
+            if not ovc.empty:
+                st.dataframe(ovc.round(3), hide_index=True, use_container_width=True)
+            st.subheader("Personnel groupings")
+            pers = cvg.personnel_profile(cov_plays, ct, seasons=(anchor,))
+            if not pers.empty:
+                st.dataframe(pers.round(3), hide_index=True, use_container_width=True)
+
+        st.subheader(f"{ct} route menu")
+        st.caption("Routes run more or less than the league does, with what they produced.")
+        rt = cvg.route_profile(cov_plays, ct, seasons=(anchor,))
+        if not rt.empty:
+            st.dataframe(
+                rt[["route", "plays", "rate", "league_rate", "lift", "yards", "epa", "comp_rate"]]
+                .rename(columns={"route": "Route", "plays": "Plays", "rate": "Team rate",
+                                 "league_rate": "League rate", "lift": "Lift",
+                                 "yards": "Yds/play", "epa": "EPA/play",
+                                 "comp_rate": "Comp%"}).round(3),
+                hide_index=True, use_container_width=True)
+
 # ------------------------------------------------------------------- matchup
 with tab_matchup:
     weeks = sorted(board.schedule_for(ctx.games, PROJECTION_SEASON)["week"].unique())
@@ -328,6 +438,8 @@ with tab_matchup:
         for off, dfn in ((ra, rh), (rh, ra)):
             st.subheader(f"{TEAM_NAMES[off['team']]} offense vs {TEAM_NAMES[dfn['team']]} defense")
             edges = report.matchup_edges(off, dfn)
+            edges += cvg.coverage_matchup(off["team"], dfn["team"], cov_plays,
+                                          seasons=(anchor,))
             if edges:
                 for e in edges:
                     st.markdown(f"- {e}")

@@ -61,7 +61,7 @@ def expected_offensive_tds(points: float) -> float:
 
 
 def team_volume(scheme: pd.Series, ctx: GameContext, opp_scheme: pd.Series | None = None,
-                env: dict | None = None) -> dict:
+                env: dict | None = None, protection: float | None = None) -> dict:
     """Project a team's play volume and scoring for one game.
 
     ``env`` carries the scoring environment - wind, roof, divisional
@@ -93,6 +93,10 @@ def team_volume(scheme: pd.Series, ctx: GameContext, opp_scheme: pd.Series | Non
 
     dropbacks = plays * pass_rate
     sack_rate = float(scheme.get("sack_rate_allowed", 0.065))
+    # Pass protection: pressure allowed per dropback relative to league, damped
+    # because pressure is only moderately persistent (r = 0.40 year over year).
+    if protection is not None and np.isfinite(protection):
+        sack_rate *= float(np.clip(1.0 + 0.45 * (protection - 1.0), 0.70, 1.35))
     scramble_rate = float(scheme.get("scramble_rate", 0.07))
     sacks = dropbacks * sack_rate
     scrambles = dropbacks * scramble_rate
@@ -352,6 +356,8 @@ def project_skill_player(
     rng: np.random.Generator | None = None,
     current_team: str | None = None, qb_shared_targets: int = 0,
     qb_continuity: float = 1.0, env: dict | None = None,
+    rush_efficiency: dict | None = None, separation: float | None = None,
+    draft: pd.DataFrame | None = None, protection: float | None = None,
 ) -> PlayerProjection:
     """Simulate a non-quarterback's receiving and rushing line for one game."""
     rng = rng or np.random.default_rng()
@@ -375,14 +381,50 @@ def project_skill_player(
         usage_hist, player_id, position, depth_rank, "goalline",
         current_team=current_team, role_pull=pulls["goalline"])
 
-    exp_targets = volume["team_targets"] * tgt_share
+    # A player with no NFL sample falls back entirely to his role prior. Draft
+    # capital is the one additional signal available for him, and it fades to
+    # nothing as soon as real usage exists.
+    draft_mult = 1.0
+    if draft is not None and tgt_ev < 0.15 and car_ev < 0.15:
+        draft_mult = usage_mod.draft_multiplier(draft, player_id)
+        tgt_share *= draft_mult
+        car_share *= draft_mult
+        gl_share *= draft_mult
+
     exp_carries = volume["rb_carries"] * car_share
+
+    # Targets come from two routes. Target share is the direct estimate; the
+    # air-yards route recovers a count from the receiver's projected share of
+    # team air yards divided by his own depth of target. The second is anchored
+    # to the most stable role signal in the data (r = 0.727 year over year,
+    # against 0.55 for target share), so it carries the majority of the blend.
+    exp_targets = volume["team_targets"] * tgt_share
+    ays_share, _ = usage_mod.project_share(
+        usage_hist, player_id, position, depth_rank, "air_yards",
+        current_team=current_team, role_pull=pulls["target"])
 
     hist = usage_hist[usage_hist["player_id"] == player_id] if player_id else pd.DataFrame()
     catch_rate = _shrunk(hist, "catch_rate", "targets", 0.645, PRIOR_STRENGTH["rec_efficiency"])
     adot = _shrunk(hist, "adot", "targets", float(scheme.get("adot", 8.0)), PRIOR_STRENGTH["rec_efficiency"])
-    ypc_player = _shrunk(hist, "ypc", "carries", 4.30, PRIOR_STRENGTH["rush_efficiency"])
     ypr_player = _shrunk(hist, "yards_per_rec", "receptions", 11.2, PRIOR_STRENGTH["rec_efficiency"])
+
+    team_air = float(volume["team_targets"]) * float(scheme.get("adot", 8.0))
+    ays_targets = usage_mod.targets_from_air_yards(ays_share, team_air, adot)
+    if np.isfinite(ays_targets) and ays_targets > 0:
+        w = usage_mod.AIR_YARDS_BLEND
+        exp_targets = (1 - w) * exp_targets + w * ays_targets
+
+    # Yards per carry is the sum of what the line gives and what the back adds.
+    # Those two persist very differently, so they are projected separately.
+    if rush_efficiency:
+        ypc_player = float(rush_efficiency["ypc"])
+    else:
+        ypc_player = _shrunk(hist, "ypc", "carries", 4.30, PRIOR_STRENGTH["rush_efficiency"])
+
+    # Separation is a more stable receiving skill signal than catch rate
+    # (r = 0.55 against 0.43), so where it exists it nudges the catch rate.
+    if separation is not None and np.isfinite(separation):
+        catch_rate = float(np.clip(catch_rate + (separation - 2.85) * 0.030, 0.30, 0.90))
 
     # Scale the bootstrap pools toward this player's own efficiency. For
     # receiving this is a residual only: the depth mix already accounts for how
@@ -423,10 +465,15 @@ def project_skill_player(
             "target_share": tgt_share, "carry_share": car_share, "goalline_share": gl_share,
             "exp_targets": exp_targets, "exp_carries": exp_carries,
             "catch_rate": catch_rate, "adot": adot, "ypc": ypc_player, "ypr": ypr_player,
+            "air_yards_share": ays_share,
             "usage_evidence": max(tgt_ev, car_ev),
             "qb_shared_targets": qb_shared_targets,
             "qb_continuity": qb_continuity,
             "role_pull": pulls["target"],
+            "draft_multiplier": draft_mult,
+            "separation": separation if separation is not None else np.nan,
+            "yards_before_contact": (rush_efficiency or {}).get("yards_before_contact", np.nan),
+            "yards_after_contact": (rush_efficiency or {}).get("yards_after_contact", np.nan),
         },
         samples={
             "targets": targets, "receptions": receptions, "rec_yards": rec_yards,
@@ -441,7 +488,7 @@ def project_quarterback(
     *, player_id, name, team, usage_hist: pd.DataFrame, qb_hist: pd.DataFrame,
     volume: dict, sampler: TouchSampler, scheme: pd.Series, def_adj: dict,
     n_sims: int = 20000, rng: np.random.Generator | None = None,
-    env: dict | None = None,
+    env: dict | None = None, protection: float | None = None,
 ) -> PlayerProjection:
     """Simulate a quarterback's passing line plus their own rushing."""
     rng = rng or np.random.default_rng()

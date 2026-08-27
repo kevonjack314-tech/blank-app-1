@@ -1,0 +1,9 @@
+.venv/
+data/raw/
+data/cache/
+data/exports/
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+tests/

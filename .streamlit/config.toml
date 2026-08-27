@@ -1,0 +1,11 @@
+[server]
+# The app downloads its own data from nflverse; nothing is ever uploaded.
+maxUploadSize = 5
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#0b6e4f"

@@ -82,6 +82,7 @@ def player_availability(snaps: pd.DataFrame, players: pd.DataFrame) -> pd.DataFr
 def project_availability(
     avail: pd.DataFrame, player_id: str | None, pos: str, rank: int,
     halflife: float = 1.5, injury_status: str | None = None,
+    practice_status: str | None = None,
 ) -> tuple[float, float]:
     """Probability a player is an active participant, plus his snap share.
 
@@ -106,8 +107,23 @@ def project_availability(
 
     if injury_status:
         p_active *= STATUS_MULTIPLIER.get(str(injury_status).strip(), 1.0)
+    if practice_status:
+        mult = PRACTICE_MULTIPLIER.get(str(practice_status).strip(), 1.0)
+        p_active *= mult
+        snap *= mult ** 0.5     # limited practice usually means a limited role
 
     return float(np.clip(p_active, 0.0, 0.99)), float(np.clip(snap, 0.0, 1.0))
+
+
+# Practice participation through the week is a finer signal than the game-day
+# designation alone: a player who did not practise at all is far less likely to
+# play, or to play a full workload, than one listed with the same designation
+# who practised in full.
+PRACTICE_MULTIPLIER = {
+    "Did Not Participate In Practice": 0.55,
+    "Limited Participation in Practice": 0.88,
+    "Full Participation in Practice": 1.0,
+}
 
 
 def current_injuries(inj: pd.DataFrame, players: pd.DataFrame) -> dict[str, str]:
@@ -122,3 +138,17 @@ def current_injuries(inj: pd.DataFrame, players: pd.DataFrame) -> dict[str, str]
     if "week" in d.columns:
         d = d.sort_values("week").groupby(idcol).tail(1)
     return dict(zip(d[idcol], d[statuscol]))
+
+
+def practice_participation(inj: pd.DataFrame) -> dict[str, str]:
+    """Latest practice status per player, keyed by gsis id."""
+    if inj is None or inj.empty or "practice_status" not in inj.columns:
+        return {}
+    d = inj.copy()
+    idcol = next((c for c in ("gsis_id", "player_id") if c in d.columns), None)
+    if idcol is None:
+        return {}
+    if "week" in d.columns:
+        d = d.sort_values("week").groupby(idcol).tail(1)
+    d = d[d["practice_status"].notna()]
+    return dict(zip(d[idcol], d["practice_status"]))

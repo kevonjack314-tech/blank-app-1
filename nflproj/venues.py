@@ -189,7 +189,11 @@ WIND_PASS_RATE_PER_MPH = -0.0024
 WIND_YPA_PCT_PER_MPH = -0.0058
 WIND_DEEP_RATE_PCT_PER_MPH = -0.0140
 WIND_YPC_PCT_PER_MPH = -0.0021
-WIND_FG_PCT_PER_MPH = -0.0045
+# There is deliberately no field-goal wind coefficient. Controlling for
+# distance, the effect is -0.017 per mph with a bootstrap t of -1.0 and a 95%
+# interval spanning zero, on only ~200 attempts in 15+ mph. Coaches also
+# attempt shorter kicks in wind, absorbing part of it at the decision level.
+# See nflproj/kicking.py.
 
 
 def _wind_excess(wind, roof) -> float:
@@ -229,7 +233,6 @@ def environment(row) -> dict:
         "pass_yards_mult": float(max(1.0 + excess * WIND_YPA_PCT_PER_MPH, 0.75)),
         "deep_rate_mult": float(max(1.0 + excess * WIND_DEEP_RATE_PCT_PER_MPH, 0.55)),
         "rush_yards_mult": float(max(1.0 + excess * WIND_YPC_PCT_PER_MPH, 0.90)),
-        "fg_pct_mult": float(max(1.0 + excess * WIND_FG_PCT_PER_MPH, 0.70)),
     }
 
 

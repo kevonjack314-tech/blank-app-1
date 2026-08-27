@@ -13,7 +13,45 @@ uv sync
 uv run streamlit run streamlit_app.py
 ```
 
-First run downloads roughly 90 MB of nflverse data into `data/raw/` and caches it.
+Opens at `http://localhost:8501`. The first run downloads roughly 140 MB of
+public nflverse data into `data/raw/` and caches it; later starts take about ten
+seconds.
+
+## Deploying it
+
+The app needs no secrets, no database and no API keys — every source is public —
+so hosting is mostly a matter of picking somewhere to run it.
+
+**Streamlit Community Cloud** (free, easiest). Push this repo to GitHub, then at
+[share.streamlit.io](https://share.streamlit.io) point a new app at
+`streamlit_app.py` on this branch. It reads `requirements.txt`. The first boot
+downloads the nflverse cache and shows progress while it does.
+
+**Any container host** (Render, Railway, Fly.io, Cloud Run, your own box):
+
+```bash
+docker build -t nfl-projections .
+docker run -p 8501:8501 nfl-projections
+```
+
+The image warms the data cache at build time so the first visitor is not left
+waiting. Comment out that line in the `Dockerfile` to fetch lazily instead.
+
+### What to watch when hosting
+
+- **Memory.** A cold start peaks around 620 MB, which fits the 1 GB free tier
+  but not with much room. Loading play-by-play season by season and storing
+  repeated strings as categories is what keeps it there; if you widen
+  `HISTORY_SEASONS`, re-measure before deploying.
+- **Ephemeral disk.** Most free hosts wipe the filesystem on restart, so the
+  140 MB download repeats on every cold boot. A small persistent volume mounted
+  at `data/` removes that.
+- **Refreshing during the season.** The cache never expires on its own. Re-run
+  `python -c "from nflproj import data; data.sync_all(projection_season=2026)"`
+  (or redeploy) to pull new results, depth charts and injury reports.
+- **It is a single-process app.** Streamlit re-runs the script per interaction
+  and `@st.cache_resource` keeps the model in memory, so one container serves
+  many readers fine — but every viewer shares that one cache.
 
 ## What it produces
 
@@ -33,6 +71,9 @@ First run downloads roughly 90 MB of nflverse data into `data/raw/` and caches i
 - **Game predictions** — independent margin, total and win probability per game
   from opponent-adjusted EPA ratings, shown next to the market line. It beats the
   naive baselines and loses to the closing line; see below.
+- **Coverage** — man/zone rates and coverage shells per defence, how each offence
+  fares against each structure, route menus and personnel groupings, from nflverse
+  participation charting.
 - **Situational context** — wind, venue and divisional status feed both the game
   and player models; travel and body clock are shown but not applied, because
   they no longer predict anything (see below).
@@ -75,6 +116,23 @@ money in backtest (48.7% ATS against a 52.4% break-even). It clears the naive
 baselines comfortably, so it knows something — it just knows less than the
 closing line. Read a large edge as "the model is missing news," not as a signal.
 
+## What drives a projection
+
+Volume dominates, so the usage signals matter most. Year-over-year stability,
+measured across 2022–2025, is what decides how much weight each carries:
+
+| signal | stability |
+| --- | --- |
+| Share of intended air yards | **0.727** |
+| Avg separation | 0.547 |
+| Yards before contact/carry (blocking) | 0.433 |
+| Pressure allowed | 0.395 |
+| Yards after contact/carry (the back) | **0.106** |
+
+That last row is why rushing is split into blocking and back rather than
+projected as one yards-per-carry number: the line persists, broken tackles do
+not.
+
 ## Travel, weather and divisional games
 
 All four were tested over 7,276 games with a closing line (1999–2025) and
@@ -107,6 +165,9 @@ nflproj/
   projections.py   volume, bootstrapped yardage, TD simulation
   board.py         assembles full projection boards
   playbook.py      situational tendencies and signature concepts
+  coverage.py      man/zone, coverage shells, routes, personnel groupings
+  blocking.py      offensive line vs running back decomposition
+  kicking.py       field goal and extra point projections
   gamemodel.py     team ratings, margin/total/win probability
   venues.py        stadium geography, climate, travel and environment
   report.py        scouting language

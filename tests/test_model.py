@@ -404,3 +404,139 @@ def test_availability_ignores_non_regular_season_snaps():
     # Two regular-season games out of two counted; the other rows are dropped.
     assert int(out["games"].iloc[0]) == 2
     assert int(out["team_games"].iloc[0]) == 2
+
+
+# ---------------------------------------------------------------- coverage
+def test_coverage_fingerprint_separates_man_and_zone():
+    from nflproj import coverage as cvg
+    n = 200
+    plays = pd.DataFrame({
+        "season": [2025] * n, "defteam": ["AAA"] * n, "posteam": ["BBB"] * n,
+        "play_id": range(n), "epa": np.linspace(-1, 1, n),
+        "defense_man_zone_type": ["MAN_COVERAGE"] * 80 + ["ZONE_COVERAGE"] * 120,
+        "defense_coverage_type": ["COVER_1"] * 80 + ["COVER_3"] * 60 + ["COVER_2"] * 60,
+        "yards_gained": [8.0] * n, "complete_pass": [1] * n, "air_yards": [9.0] * n,
+        "was_pressure": [False] * n,
+    })
+    fp = cvg.coverage_fingerprint(plays, seasons=(2025,))
+    r = fp.iloc[0]
+    assert r["man_rate"] == pytest.approx(0.40)
+    assert r["zone_rate"] == pytest.approx(0.60)
+    # Cover 1 and Cover 3 are single-high; Cover 2 is two-high.
+    assert r["single_high_rate"] == pytest.approx(0.70)
+    assert r["two_high_rate"] == pytest.approx(0.30)
+
+
+def test_coverage_requires_a_minimum_sample():
+    from nflproj import coverage as cvg
+    tiny = pd.DataFrame({
+        "season": [2025] * 5, "defteam": ["AAA"] * 5, "posteam": ["BBB"] * 5,
+        "play_id": range(5), "epa": [0.0] * 5,
+        "defense_man_zone_type": ["MAN_COVERAGE"] * 5,
+        "defense_coverage_type": ["COVER_1"] * 5,
+        "yards_gained": [5.0] * 5, "complete_pass": [1] * 5, "air_yards": [8.0] * 5,
+    })
+    assert cvg.coverage_fingerprint(tiny, seasons=(2025,)).empty
+
+
+# ---------------------------------------------------------------- blocking
+def test_rushing_splits_into_blocking_and_back():
+    from nflproj import blocking as blk
+    tb = pd.DataFrame([{"season": 2025, "team": "AAA", "carries": 400,
+                        "ybc": 400 * 3.2, "yac": 400 * 1.9,
+                        "ybc_per_carry": 3.2, "yac_per_carry": 1.9}])
+    pe = pd.DataFrame([{"season": 2025, "player_id": "P1", "carries": 250,
+                        "yac_per_carry": 2.4, "broken_per_carry": 0.15}])
+    good = blk.project_rushing_efficiency("AAA", "P1", tb, pe)
+    assert good["yards_before_contact"] > blk.LEAGUE_YBC   # good line shows up
+    assert good["ypc"] == pytest.approx(good["yards_before_contact"] + good["yards_after_contact"])
+
+
+def test_blocking_persists_more_than_elusiveness():
+    """The measured asymmetry must be reflected in how far each is regressed."""
+    from nflproj import blocking as blk
+    assert blk.TEAM_BLOCKING_PERSISTENCE > blk.PLAYER_ELUSIVENESS_PERSISTENCE
+    tb = pd.DataFrame([{"season": 2025, "team": "AAA", "carries": 400,
+                        "ybc_per_carry": 3.45, "yac_per_carry": 1.85}])
+    pe = pd.DataFrame([{"season": 2025, "player_id": "P1", "carries": 400,
+                        "yac_per_carry": 2.45}])
+    r = blk.project_rushing_efficiency("AAA", "P1", tb, pe)
+    # Both are a full point above league; blocking should retain more of it.
+    assert r["blocking_vs_league"] > r["elusiveness_vs_league"]
+
+
+def test_unknown_team_falls_back_to_league_blocking():
+    from nflproj import blocking as blk
+    r = blk.project_rushing_efficiency("ZZZ", None, pd.DataFrame(), pd.DataFrame())
+    assert r["yards_before_contact"] == pytest.approx(blk.LEAGUE_YBC)
+    assert r["has_player_sample"] is False
+
+
+# ----------------------------------------------------------------- kicking
+def test_field_goal_probability_falls_with_distance():
+    from nflproj import kicking as kik
+    assert kik.make_probability(25) > kik.make_probability(45) > kik.make_probability(60)
+    assert 0.95 < kik.make_probability(25) < 1.0
+    assert 0.45 < kik.make_probability(58) < 0.65
+
+
+def test_kicker_skill_is_heavily_regressed():
+    from nflproj import kicking as kik
+    hist = pd.DataFrame([{"season": 2025, "player_id": "K1", "attempts": 30,
+                          "fg_over_expected": 0.10}])
+    skill = kik.project_kicker_accuracy(hist, "K1")
+    assert 0 < skill < 0.10          # a strong season moves it only part way
+    assert kik.project_kicker_accuracy(hist, "UNKNOWN") == 0.0
+
+
+def test_no_field_goal_wind_coefficient_exists():
+    """Wind on FG accuracy was tested and not supported; it must stay out."""
+    from nflproj import venues as ven
+    assert not hasattr(ven, "WIND_FG_PCT_PER_MPH")
+    assert "fg_pct_mult" not in ven.environment({"roof": "outdoors", "wind": 25, "div_game": 0})
+
+
+# ------------------------------------------------------------ draft capital
+def test_draft_capital_orders_by_pick():
+    from nflproj import usage as usg
+    draft = pd.DataFrame({"gsis_id": ["A", "B", "C"], "pick": [3, 50, 240]})
+    a = usg.draft_multiplier(draft, "A")
+    b = usg.draft_multiplier(draft, "B")
+    c = usg.draft_multiplier(draft, "C")
+    assert a > b > c
+    assert usg.draft_multiplier(draft, "UNKNOWN") == usg.UNDRAFTED_MULTIPLIER
+
+
+# --------------------------------------------------- point-in-time charts
+def test_depth_chart_respects_as_of_cutoff():
+    """A Week 3 projection must not see a Week 18 chart."""
+    from nflproj import data as dat
+    early = dat.depth_chart(2025, as_of="2025-09-15")
+    late = dat.depth_chart(2025)
+    if early.empty or late.empty:
+        pytest.skip("depth chart cache unavailable")
+    assert early["dt"].max() <= pd.Timestamp("2025-09-15", tz="UTC")
+    assert early["dt"].max() < late["dt"].max()
+
+
+# ------------------------------------------------------ practice status
+def test_practice_participation_lowers_availability():
+    p_full, s_full = av.project_availability(pd.DataFrame(), None, "WR", 1,
+                                             practice_status="Full Participation in Practice")
+    p_dnp, s_dnp = av.project_availability(pd.DataFrame(), None, "WR", 1,
+                                           practice_status="Did Not Participate In Practice")
+    assert p_dnp < p_full
+    assert s_dnp < s_full
+
+
+def test_pass_protection_moves_the_sack_rate():
+    scheme = pd.Series({
+        "plays_per_game": 63, "early_down_pass_rate": 0.55, "sack_rate_allowed": 0.07,
+        "scramble_rate": 0.06, "qb_designed_run_rate": 0.03, "rz_pass_rate": 0.52,
+        "g2g_run_rate": 0.55, "sec_per_play": 31, "adot": 8.0,
+    })
+    gc = pj.GameContext("X", total_line=45, spread_line=0)
+    good = pj.team_volume(scheme, gc, protection=0.70)   # allows little pressure
+    bad = pj.team_volume(scheme, gc, protection=1.40)
+    assert good["sacks"] < bad["sacks"]
+    assert good["attempts"] > bad["attempts"]

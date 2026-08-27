@@ -48,7 +48,24 @@ GOALLINE_SHARE_PRIOR = {
 # Share of team volume absorbed by players on the projected depth chart. The
 # remainder goes to deep reserves and week-to-week call-ups who are not
 # projected individually.
-CHARTED_COVERAGE = {"target": 0.956, "carry": 0.907, "goalline": 0.881}
+# Share of a team's *air yards* by role. Depth-weighted, so a deep threat
+# indexes higher here than his raw target share suggests and a checkdown back
+# indexes lower.
+AIR_YARDS_SHARE_PRIOR = {
+    ("WR", 1): 0.270, ("WR", 2): 0.175, ("WR", 3): 0.108, ("WR", 4): 0.060,
+    ("WR", 5): 0.036, ("WR", 6): 0.027,
+    ("TE", 1): 0.128, ("TE", 2): 0.047, ("TE", 3): 0.022,
+    ("RB", 1): 0.045, ("RB", 2): 0.021, ("RB", 3): 0.008, ("RB", 4): 0.005,
+    ("FB", 1): 0.008,
+}
+CHARTED_COVERAGE = {"target": 0.956, "carry": 0.907, "goalline": 0.881,
+                    "air_yards": 0.96}
+
+# How much of the target projection comes from the air-yards route rather than
+# raw target share. Air-yards share is the single most stable usage metric
+# measured (r = 0.727 year over year, against 0.55 for target share), because
+# it encodes role and depth together - so it carries the majority of the blend.
+AIR_YARDS_BLEND = 0.55
 
 
 def player_usage(plays: pd.DataFrame) -> pd.DataFrame:
@@ -148,9 +165,16 @@ def player_usage(plays: pd.DataFrame) -> pd.DataFrame:
     for c in counts:
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
 
+    team_air = (
+        df[df["receiver_player_id"].notna()]
+        .groupby(["season", "posteam"])["air_yards"].sum()
+        .rename("team_air_yards").reset_index().rename(columns={"posteam": "team"})
+    )
     team_gl = gl[gl["is_designed_run"]].groupby(["season", "posteam"]).size().rename("team_goalline").reset_index().rename(columns={"posteam": "team"})
     team_rz = rz[rz["receiver_player_id"].notna()].groupby(["season", "posteam"]).size().rename("team_rz_targets").reset_index().rename(columns={"posteam": "team"})
     out = out.merge(team_gl, on=["season", "team"], how="left").merge(team_rz, on=["season", "team"], how="left")
+    out = out.merge(team_air, on=["season", "team"], how="left")
+    out["team_air_yards"] = out["team_air_yards"].fillna(1.0)
     out = out.merge(games_played, on=["season", "team", "player_id"], how="left")
     out = out.merge(team_games, on=["season", "team"], how="left")
     out["games_played"] = out["games_played"].fillna(0)
@@ -160,15 +184,18 @@ def player_usage(plays: pd.DataFrame) -> pd.DataFrame:
     # Team volume over just the games this player appeared in.
     avail = out["availability"].replace(0, np.nan)
     for col, team_col in (("target_share", "team_targets"), ("carry_share", "team_carries"),
-                          ("goalline_share", "team_goalline"), ("rz_target_share", "team_rz_targets")):
+                          ("goalline_share", "team_goalline"), ("rz_target_share", "team_rz_targets"),
+                          ("air_yards_share", "team_air_yards")):
         out[f"_{team_col}_avail"] = (out[team_col] * avail).clip(lower=1)
+    out["air_yards_share"] = out["rec_air"] / out["_team_air_yards_avail"]
     out["target_share"] = out["targets"] / out["_team_targets_avail"]
     out["carry_share"] = out["carries"] / out["_team_carries_avail"]
     out["goalline_share"] = out["goalline_carries"] / out["_team_goalline_avail"]
     out["rz_target_share"] = out["rz_targets"] / out["_team_rz_targets_avail"]
     for c in [c for c in out.columns if c.startswith("_team_")]:
         del out[c]
-    for c in ("target_share", "carry_share", "goalline_share", "rz_target_share"):
+    for c in ("target_share", "carry_share", "goalline_share", "rz_target_share",
+              "air_yards_share"):
         out[c] = out[c].clip(upper=0.60)
     out["catch_rate"] = out["receptions"] / out["targets"].replace(0, np.nan)
     out["yards_per_target"] = out["rec_yards"] / out["targets"].replace(0, np.nan)
@@ -212,9 +239,12 @@ def project_share(
         "target": TARGET_SHARE_PRIOR,
         "carry": CARRY_SHARE_PRIOR,
         "goalline": GOALLINE_SHARE_PRIOR,
+        "air_yards": AIR_YARDS_SHARE_PRIOR,
     }[kind]
-    col = {"target": "target_share", "carry": "carry_share", "goalline": "goalline_share"}[kind]
-    denom_col = {"target": "targets", "carry": "carries", "goalline": "goalline_carries"}[kind]
+    col = {"target": "target_share", "carry": "carry_share",
+           "goalline": "goalline_share", "air_yards": "air_yards_share"}[kind]
+    denom_col = {"target": "targets", "carry": "carries",
+                 "goalline": "goalline_carries", "air_yards": "targets"}[kind]
 
     prior = prior_map.get((pos, int(rank)), 0.01)
     if not player_id:
@@ -298,9 +328,10 @@ def role_pull_for(usage: pd.DataFrame, player_id: str | None, pos: str, rank: in
 
     # Compare the role their usage implies against the one they now hold.
     prior_map = {"target": TARGET_SHARE_PRIOR, "carry": CARRY_SHARE_PRIOR,
-                 "goalline": GOALLINE_SHARE_PRIOR}[kind]
+                 "goalline": GOALLINE_SHARE_PRIOR,
+                 "air_yards": AIR_YARDS_SHARE_PRIOR}[kind]
     col = {"target": "target_share", "carry": "carry_share",
-           "goalline": "goalline_share"}[kind]
+           "goalline": "goalline_share", "air_yards": "air_yards_share"}[kind]
     ranks = sorted(r for (p_, r) in prior_map if p_ == pos)
     if not ranks:
         return pull
@@ -313,3 +344,55 @@ def role_pull_for(usage: pd.DataFrame, player_id: str | None, pos: str, rank: in
     if mismatch >= 1:
         pull = max(pull, min(0.30 * mismatch, 0.60))
     return float(min(pull, 0.65))
+
+
+def targets_from_air_yards(air_yards_share: float, team_air_yards: float,
+                           adot: float) -> float:
+    """Recover a target count from a projected air-yards share.
+
+    Air yards are targets multiplied by depth, so dividing a receiver's
+    projected share of team air yards by his own average depth of target gives
+    an independent estimate of his target count - one anchored to the most
+    stable role signal in the data rather than to target share alone.
+    """
+    if not np.isfinite(adot) or adot <= 1.0:
+        return np.nan
+    return float(air_yards_share * team_air_yards / adot)
+
+
+# A rookie has no NFL sample, so the role prior for his depth-chart slot is all
+# the model has. Draft capital is the one extra signal available, and it is a
+# strong one: teams give early picks the ball. These multipliers scale the role
+# prior by where a player was taken, measured against the same slot's league
+# average usage.
+DRAFT_CAPITAL_MULTIPLIER = [
+    (1, 10, 1.28),      # top-ten picks are handed a role immediately
+    (11, 32, 1.15),
+    (33, 64, 1.05),
+    (65, 105, 0.96),
+    (106, 200, 0.88),
+    (201, 262, 0.82),
+]
+UNDRAFTED_MULTIPLIER = 0.78
+
+
+def draft_multiplier(draft: pd.DataFrame, player_id: str | None,
+                     rookie_season: int | None = None) -> float:
+    """Usage multiplier implied by where a player was drafted.
+
+    Applies only while a player has no meaningful NFL sample of his own. Once
+    he has played, what he actually did outranks where he was picked.
+    """
+    if not player_id or draft is None or draft.empty or "gsis_id" not in draft.columns:
+        return 1.0
+    row = draft[draft["gsis_id"] == player_id]
+    if row.empty:
+        return UNDRAFTED_MULTIPLIER
+    pick = row["pick"].iloc[0]
+    if pd.isna(pick):
+        return UNDRAFTED_MULTIPLIER
+    pick = int(pick)
+    for lo, hi, mult in DRAFT_CAPITAL_MULTIPLIER:
+        if lo <= pick <= hi:
+            return mult
+    return UNDRAFTED_MULTIPLIER
