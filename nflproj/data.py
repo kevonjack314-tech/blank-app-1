@@ -216,7 +216,7 @@ def sync_all(seasons=HISTORY_SEASONS, projection_season: int | None = None) -> d
     status = {}
     for s in seasons:
         for a in ("pbp", "weekly", "ftn", "snaps", "pfr_pass", "pfr_rush", "pfr_rec",
-                  "injuries", "participation"):
+                  "pfr_def", "injuries", "participation"):
             status[f"{a}_{s}"] = fetch(a, s) is not None
     if projection_season:
         for a in ("depth", "roster"):

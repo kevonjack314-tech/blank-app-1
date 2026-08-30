@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY nflproj/ ./nflproj/
 COPY scripts/ ./scripts/
 COPY data/coaching_2026.yaml ./data/coaching_2026.yaml
+# Hand-entered beat reporting. The app runs without it, but shipping it empty
+# loses whatever notes were written.
+COPY data/news_2026.yaml ./data/news_2026.yaml
 COPY streamlit_app.py METHOD.md README.md ./
 
 # Warm the nflverse cache at build time so the first visitor does not wait for

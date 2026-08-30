@@ -39,10 +39,14 @@ waiting. Comment out that line in the `Dockerfile` to fetch lazily instead.
 
 ### What to watch when hosting
 
-- **Memory.** A cold start peaks around 620 MB, which fits the 1 GB free tier
-  but not with much room. Loading play-by-play season by season and storing
-  repeated strings as categories is what keeps it there; if you widen
-  `HISTORY_SEASONS`, re-measure before deploying.
+- **Memory.** Loading the model peaks around 620 MB and a full 20,000-simulation
+  slate held live takes it to **800 MB**, which fits the 1 GB free tier with
+  about 200 MB of headroom. Three things keep it there: play-by-play is read
+  season by season rather than all at once, repeated strings are stored as
+  categories, and simulated samples are held as `float32` — a slate is sixteen
+  games of roughly fifty players over nine statistics, and at double precision
+  that alone was 440 MB and put a cold start over the limit. If you widen
+  `HISTORY_SEASONS` or raise the simulation count, re-measure before deploying.
 - **Ephemeral disk.** Most free hosts wipe the filesystem on restart, so the
   140 MB download repeats on every cold boot. A small persistent volume mounted
   at `data/` removes that.

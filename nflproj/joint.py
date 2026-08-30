@@ -78,6 +78,20 @@ SCRIPT_STRENGTH = 0.006      # pass-rate points per point of simulated margin
 SHARE_CONCENTRATION = {"target": 26.0, "carry": 15.0}
 
 
+# Simulated samples are stored as 32-bit floats. A whole slate is sixteen games
+# of roughly fifty players carrying nine statistics over twenty thousand
+# simulations, and at double precision that is about 440 MB held live - enough
+# to put a cold start over a 1 GB container on its own. Nothing here needs
+# fifteen significant digits: these are simulated yards and touchdown counts,
+# and float32 holds every integer up to 2^24 exactly.
+SAMPLE_DTYPE = np.float32
+
+
+def _store(samples: dict) -> dict:
+    """Cast one player's simulated line to the storage dtype."""
+    return {k: np.asarray(v, dtype=SAMPLE_DTYPE) for k, v in samples.items()}
+
+
 @dataclass
 class JointGame:
     """One game simulated jointly. Every array shares a simulation index."""
@@ -219,10 +233,10 @@ def simulate_game(
         team_pass_td = rng.poisson(np.clip(off_td * pass_td_share, 0.01, 6))
         team_rush_td = rng.poisson(np.clip(off_td * (1 - pass_td_share), 0.01, 6))
 
-        out.team_totals[team] = {
+        out.team_totals[team] = _store({
             "plays": plays, "attempts": attempts, "rb_carries": rb_carries,
             "pass_td": team_pass_td, "rush_td": team_rush_td, "points": pts[team],
-        }
+        })
 
         _allocate_team(out, team, b, ctx, projections_map, usage_hist, sampler,
                        league_def, source, attempts, rb_carries, qb_runs + scrambles,
@@ -352,13 +366,13 @@ def _allocate_team(out: JointGame, team: str, b: dict, ctx, projections_map: dic
         rec_td = rng.binomial(team_pass_td, float(np.clip(rec_td_share, 0, 0.95))) * active[:, i]
         rush_td = rng.binomial(team_rush_td, float(np.clip(rush_td_share, 0, 0.95))) * active[:, i]
 
-        out.players[s["name"]] = {
-            "targets": targets.astype(float), "receptions": receptions.astype(float),
-            "rec_yards": rec_yards, "carries": carries.astype(float),
+        out.players[s["name"]] = _store({
+            "targets": targets, "receptions": receptions,
+            "rec_yards": rec_yards, "carries": carries,
             "rush_yards": rush_yards, "scrimmage_yards": rec_yards + rush_yards,
-            "rec_td": rec_td.astype(float), "rush_td": rush_td.astype(float),
-            "total_td": (rec_td + rush_td).astype(float),
-        }
+            "rec_td": rec_td, "rush_td": rush_td,
+            "total_td": rec_td + rush_td,
+        })
         out.meta[s["name"]] = {"position": s["pos"], "team": team,
                                "depth_rank": s["rank"], "p_active": float(p_active[i]),
                                "player_id": s["id"]}
@@ -422,17 +436,17 @@ def _add_quarterback(out: JointGame, team: str, b: dict, ctx, sampler, adj: dict
         practice_status=(getattr(ctx, "practice", None) or {}).get(pid))
     mask = (rng.random(n_sims) < pa).astype(float)
 
-    out.players[row["player_name"]] = {
-        "attempts": att.astype(float) * mask,
-        "completions": completions.astype(float) * mask,
+    out.players[row["player_name"]] = _store({
+        "attempts": att * mask,
+        "completions": completions * mask,
         "pass_yards": pass_yards * mask,
-        "pass_td": team_pass_td.astype(float) * mask,
-        "interceptions": rng.poisson(np.maximum(attempts * 0.023, 0)).astype(float) * mask,
-        "carries": carries.astype(float) * mask,
+        "pass_td": team_pass_td * mask,
+        "interceptions": rng.poisson(np.maximum(attempts * 0.023, 0)) * mask,
+        "carries": carries * mask,
         "rush_yards": rush_yards * mask,
-        "rush_td": rush_td.astype(float) * mask,
-        "total_td": rush_td.astype(float) * mask,
-    }
+        "rush_td": rush_td * mask,
+        "total_td": rush_td * mask,
+    })
     out.meta[row["player_name"]] = {"position": "QB", "team": team, "depth_rank": 1,
                                     "p_active": float(pa), "player_id": pid}
     out.active[row["player_name"]] = mask.astype(bool)

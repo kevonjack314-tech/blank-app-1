@@ -1,5 +1,9 @@
 # Streamlit Community Cloud reads this file. Keep it in step with pyproject.toml.
 streamlit>=1.40
+# Charts are drawn with Altair directly. Streamlit happens to depend on it
+# today, but relying on a transitive dependency for a direct import breaks the
+# day that changes.
+altair>=5.0
 pandas>=2.2
 numpy>=1.26
 pyarrow>=16

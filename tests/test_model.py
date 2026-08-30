@@ -1128,3 +1128,60 @@ def test_line_continuity_counts_returning_starters():
     # D played 50 snaps last year, below the starter threshold, so he does not count
     assert row["returning_starters"] == 2
     assert row["snap_continuity"] == pytest.approx(1700 / 3500)
+
+
+def test_every_asset_the_model_reads_is_in_the_first_run_sync():
+    """A fresh container downloads only what sync_all names. An asset the
+    pipeline reads but the sync misses ships as a silently empty table."""
+    import inspect
+    from nflproj import data as ndata
+
+    src = inspect.getsource(ndata.sync_all)
+    per_season = {a for a in ndata.ASSETS if f'"{a}"' in src}
+    missing = set(ndata.ASSETS) - per_season - {"depth", "roster"}
+    assert not missing, f"assets read but never synced: {sorted(missing)}"
+
+
+def test_simulated_samples_are_stored_at_single_precision():
+    """A slate at double precision is about 440 MB held live, which puts a
+    cold start over a 1 GB container on its own. These are simulated yards;
+    float32 holds every integer up to 2^24 exactly, which is far past any
+    plausible count."""
+    from nflproj import joint as jnt
+
+    assert jnt.SAMPLE_DTYPE is np.float32
+    stored = jnt._store({"rec_yards": np.array([12.5, 0.0, 143.0]),
+                         "targets": np.array([3, 0, 11])})
+    assert all(v.dtype == np.float32 for v in stored.values())
+    # counts survive exactly
+    assert stored["targets"].tolist() == [3.0, 0.0, 11.0]
+
+
+def test_every_direct_import_is_a_declared_dependency():
+    """A transitive dependency that happens to be installed today is not a
+    declaration. Altair in particular arrives via Streamlit and is imported
+    directly by the app."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    reqs = (root / "requirements.txt").read_text().lower()
+    app = (root / "streamlit_app.py").read_text()
+    third_party = {"altair", "streamlit", "numpy", "pandas"}
+    imported = set()
+    for line in app.splitlines():
+        m = re.match(r"import (\w+)", line.strip())
+        if m and m.group(1) in third_party:
+            imported.add(m.group(1))
+    assert imported, "no third-party imports found; the check has gone stale"
+    for pkg in imported:
+        assert pkg in reqs, f"{pkg} is imported directly but not in requirements.txt"
+
+
+def test_dockerfile_ships_the_data_files_the_app_reads():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    docker = (root / "Dockerfile").read_text()
+    for f in (root / "data").glob("*.yaml"):
+        assert f.name in docker, f"{f.name} is read at runtime but never copied into the image"

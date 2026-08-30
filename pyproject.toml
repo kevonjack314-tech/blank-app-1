@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "streamlit>=1.40",
+    "altair>=5.0",
     "pandas>=2.2",
     "numpy>=1.26",
     "pyarrow>=16",
