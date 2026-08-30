@@ -575,11 +575,15 @@ with tab_war:
 
         st.subheader("X-factors")
         st.caption(
-            "Not the best players — the ones whose projection moves most against "
-            "*this* opponent, measured by re-projecting them against a "
-            "league-average defence. Preseason the spread is narrow, because "
-            "defensive quality barely carries year to year (r ≈ 0.11–0.29); "
-            "in-season, with current form, it widens considerably."
+            "Players who can change the trajectory of a game — ranked on the top "
+            "of their range, not the middle. **Ceiling** is the 90th-percentile "
+            "outcome, **boom %** is how often the simulation produces a genuinely "
+            "game-breaking line, and **explosive index** is how often the player's "
+            "own touches have actually gone 20+ yards against league average. A "
+            "back projected for a steady 70 is valuable and is not an X-factor; a "
+            "receiver projected for 55 with a real chance of 140 and two scores is. "
+            "**Matchup swing** is carried alongside because it is informative, but "
+            "facing a soft defence does not by itself make a player an X-factor."
         )
         gcs_w = board.game_contexts(ctx.games, PROJECTION_SEASON, int(w_week))
         envs_w = board.game_environments(ctx.games, PROJECTION_SEASON, int(w_week))
@@ -596,12 +600,13 @@ with tab_war:
                 if xf.empty:
                     st.caption("No meaningful swing.")
                 else:
-                    st.dataframe(xf[["player", "pos", "projection",
-                                     "vs_average_defense", "matchup_swing",
-                                     "swing_pct"]].rename(columns={
+                    st.dataframe(xf[["player", "pos", "projection", "ceiling_90th",
+                                     "boom_pct", "explosive_index", "matchup_swing",
+                                     "p_active"]].rename(columns={
                         "player": "Player", "pos": "Pos", "projection": "Proj",
-                        "vs_average_defense": "vs avg D",
-                        "matchup_swing": "Swing", "swing_pct": "Swing %"}).round(2),
+                        "ceiling_90th": "Ceiling", "boom_pct": "Boom %",
+                        "explosive_index": "Explosive", "matchup_swing": "Swing",
+                        "p_active": "Active"}).round(2),
                         hide_index=True, use_container_width=True)
 
         st.subheader("Situational edges")

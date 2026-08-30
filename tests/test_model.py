@@ -789,3 +789,48 @@ def test_unknown_effects_are_ignored(tmp_path):
         {"player": "B", "effect": "usage_up", "magnitude": 0.1},
     ]}))
     assert list(nw.load_notes(p)["player"]) == ["B"]
+
+
+# ---------------------------------------------------------------- x-factors
+def test_explosive_index_is_scaled_against_league_rate():
+    from nflproj import gameplan as gpl
+    plays = pd.DataFrame({
+        "receiver_player_id": ["A"] * 100 + ["B"] * 100,
+        "rusher_player_id": [None] * 200,
+        "is_designed_run": [False] * 200,
+        "complete_pass": [1] * 200,
+        # A breaks 20+ on half his catches; B never does.
+        "yards_gained": ([30.0] * 50 + [5.0] * 50) + [5.0] * 100,
+    })
+    prof = gpl.explosive_profile(plays)
+    a = prof[prof.player_id == "A"].iloc[0]
+    b = prof[prof.player_id == "B"].iloc[0]
+    assert a["explosive"] == pytest.approx(0.5)
+    assert b["explosive"] == pytest.approx(0.0)
+    # Indexed against the league receiving rate, so above 1 means explosive.
+    assert a["explosive_index"] > 1.0 > b["explosive_index"] or b["explosive_index"] == 0.0
+
+
+def test_boom_probability_reads_the_top_of_the_range():
+    from nflproj import gameplan as gpl
+    steady = pj.PlayerProjection(
+        player_id="S", name="Steady", team="AAA", position="RB", depth_rank=1,
+        samples={"scrimmage_yards": np.full(10000, 70.0),
+                 "total_td": np.zeros(10000)})
+    volatile = pj.PlayerProjection(
+        player_id="V", name="Volatile", team="AAA", position="RB", depth_rank=1,
+        samples={"scrimmage_yards": np.concatenate([np.full(6000, 20.0),
+                                                    np.full(4000, 140.0)]),
+                 "total_td": np.zeros(10000)})
+    # Same rough workload, but only one can break a game open.
+    assert gpl._boom_probability(steady, "RB") == pytest.approx(0.0)
+    assert gpl._boom_probability(volatile, "RB") == pytest.approx(0.4, abs=0.01)
+
+
+def test_boom_thresholds_are_defined_per_position():
+    from nflproj import gameplan as gpl
+    for pos in ("QB", "RB", "WR", "TE"):
+        assert pos in gpl.BOOM_THRESHOLDS and gpl.BOOM_THRESHOLDS[pos]
+    # A quarterback's bar is passing volume, a skill player's is scrimmage yards.
+    assert "pass_yards" in gpl.BOOM_THRESHOLDS["QB"]
+    assert "scrimmage_yards" in gpl.BOOM_THRESHOLDS["WR"]

@@ -528,16 +528,32 @@ boxes, deep shots against a single-high shell, tempo against substitution. Each
 read is generated from measured rates on both sides rather than written in
 advance.
 
-**X-factors** are computed rather than nominated: each player is projected twice,
-once against this opponent and once against a league-average defence, and ranked
-by the gap. That finds the player whose week actually swings on this matchup
-rather than the player who is simply good.
+**X-factors** are the players who can change the trajectory of a game on any
+given Sunday — the ones who take a game over rather than the ones who produce
+steadily. Ranking is on the top of the range, not the middle, from three
+measured ingredients:
 
-The preseason spread here is deliberately narrow. Defensive quality barely
-carries year to year — yards allowed at r ≈ 0.11, explosive plays allowed at 0.29
-— so before a snap is played there is little basis for saying one defence will
-suppress a receiver more than another. In-season, with current-year form, the
-same machinery separates opponents much more sharply.
+* **Ceiling** — the 90th-percentile outcome of the simulation.
+* **Boom probability** — how often the simulation produces a genuinely
+  game-breaking line: 120 scrimmage yards or two scores for a back, 110 for a
+  receiver, 300 passing yards or three touchdowns for a quarterback.
+* **Explosive index** — how often the player's own touches have actually gone
+  twenty yards, against a league rate of 13.8% of receptions and 2.3% of
+  carries. This is the part no distribution of totals captures: a player who
+  gains his yards in chunks can turn a game on one snap, and one who grinds for
+  the same total cannot.
+
+Availability gates the score, since a player who may not dress cannot swing
+anything. A back projected for a reliable 70 yards is valuable and is not an
+X-factor; a receiver projected for 55 with a real chance of 140 and two scores
+is.
+
+Matchup sensitivity — the same player re-projected against a league-average
+defence — is reported alongside but does not drive the ranking. Facing a soft
+secondary is not what makes someone a game-breaker. That column is also narrow
+before the season starts, because defensive quality barely carries year to year
+(yards allowed r ≈ 0.11, explosive plays allowed 0.29); in-season, with current
+form, it separates opponents much more sharply.
 
 ### A bug this exposed
 
