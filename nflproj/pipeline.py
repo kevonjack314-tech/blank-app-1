@@ -46,6 +46,7 @@ class Context:
     kickers: pd.DataFrame = None
     current_season: int = None
     through_week: int = None
+    league_offense: pd.Series = None
 
 
 def build_context(seasons=HISTORY_SEASONS, projection_season=PROJECTION_SEASON,
@@ -110,6 +111,7 @@ def build_context(seasons=HISTORY_SEASONS, projection_season=PROJECTION_SEASON,
         chart=personnel.latest_depth_chart(depth),
         fronts=personnel.base_defensive_front(depth),
         qb_profiles=personnel.qb_profiles(plays),
+        league_offense=schemes.league_means(fp, "offense", int(fp["season"].max())),
         staffs=coaches.load_registry(),
         games=data.games(),
         weekly=data.weekly_stats(seasons),

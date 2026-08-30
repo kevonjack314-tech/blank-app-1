@@ -34,6 +34,7 @@ from . import availability as av
 from . import blocking as bl
 from . import projections as pj
 from . import usage as usage_mod
+from . import personnel
 from .board import BOARD_DEPTH
 
 # Spread of the shared shocks, calibrated against within-team game-to-game
@@ -165,7 +166,15 @@ def simulate_game(
         opp = home if team == away else away
         opp_scheme = projections_map[opp]["offense"]["projected"] if opp in projections_map else None
         protection = (getattr(ctx, "protection", None) or {}).get(team)
-        vol = pj.team_volume(scheme, gc, opp_scheme, env=envs.get(team), protection=protection)
+        team_chart = source[source["team"] == team]
+        qb_seat = team_chart[team_chart["pos_abb"] == "QB"].sort_values("pos_rank")
+        qb_seat_id = qb_seat.iloc[0].get("gsis_id") if len(qb_seat) else None
+        base_vol = pj.team_volume(scheme, gc, opp_scheme, env=envs.get(team),
+                                  protection=protection)
+        qb_vol = personnel.qb_volume_multiplier(
+            ctx.qb_profiles, qb_seat_id, base_vol["attempts"])
+        vol = pj.team_volume(scheme, gc, opp_scheme, env=envs.get(team),
+                             protection=protection, qb_volume=qb_vol)
         base[team] = {"gc": gc, "scheme": scheme, "vol": vol,
                       "opp_def": projections_map[opp]["defense"]["projected"] if opp in projections_map else None}
 
@@ -291,6 +300,14 @@ def _allocate_team(out: JointGame, team: str, b: dict, ctx, projections_map: dic
     coverage_t = usage_mod.CHARTED_COVERAGE["target"]
     coverage_c = usage_mod.CHARTED_COVERAGE["carry"]
 
+    # The passer's projected efficiency, applied to his receivers. In this
+    # simulator the quarterback's yards are the sum of theirs, so this is the
+    # only place it can enter, and it reaches both lines from one number.
+    _qb_row = chart[chart["pos_abb"] == "QB"].sort_values("pos_rank")
+    _qb_id = _qb_row.iloc[0].get("gsis_id") if len(_qb_row) else None
+    qb_eff = personnel.qb_passing_line(
+        ctx.qb_profiles, _qb_id, scheme, getattr(ctx, "league_offense", None))["ypa_multiplier"]
+
     for i, s in enumerate(skill):
         hist = usage_hist[usage_hist["player_id"] == s["id"]] if s["id"] else pd.DataFrame()
         catch_rate = pj._shrunk(hist, "catch_rate", "targets", 0.645,
@@ -312,6 +329,7 @@ def _allocate_team(out: JointGame, team: str, b: dict, ctx, projections_map: dic
 
         expected = sampler.expected_ypr(adot)
         rec_scale = float(np.clip(ypr / expected if expected > 0 else 1.0, 0.82, 1.22)) * adj["pass_yards"]
+        rec_scale *= float(np.clip(qb_eff, 0.80, 1.22))
         rush_scale = float(np.clip(ypc / 4.30, 0.72, 1.35)) * adj["rush_yards"]
         eff_adot = adot
         if env:
@@ -380,16 +398,9 @@ def _add_quarterback(out: JointGame, team: str, b: dict, ctx, sampler, adj: dict
     row = qb.iloc[0]
     pid = row.get("gsis_id") or None
 
-    h = ctx.qb_profiles[ctx.qb_profiles["player_id"] == pid] if pid is not None else pd.DataFrame()
-    cpoe = pj._shrunk_simple(h, "cpoe", 0.0, 300.0)
-    comp = float(np.clip(0.655 + (cpoe / 100.0 if np.isfinite(cpoe) else 0.0), 0.55, 0.75))
-
-    adot = float(scheme.get("adot", 7.8))
-    scale = adj["pass_yards"]
-    if env:
-        adot *= float(env.get("deep_rate_mult", 1.0))
-        scale *= float(env.get("pass_yards_mult", 1.0))
-        comp = float(np.clip(comp + env.get("wind_excess", 0.0) * -0.0016, 0.50, 0.75))
+    # Depth of target and yards per attempt reach this line through the
+    # receivers, whose scale already carries the passer's efficiency; nothing
+    # further is applied here or it would be counted twice.
 
     # Charted receivers do not absorb every target, so scale their totals back
     # up to the full offence before calling them the quarterback's line.

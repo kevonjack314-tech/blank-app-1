@@ -27,7 +27,7 @@ import yaml
 
 from .config import DATA, LAST_COMPLETED_SEASON, TEAMS, normalize_team
 from .schemes import (DEFENSE_IDENTITY, DEFENSE_QUALITY_PERSISTENCE,
-                      OFFENSE_IDENTITY)
+                      OFFENSE_IDENTITY, OFFENSE_QUALITY_PERSISTENCE)
 
 log = logging.getLogger(__name__)
 
@@ -227,6 +227,8 @@ def project_fingerprint(
 
     if side == "defense":
         projected = _add_defense_quality(projected, base, league, anchor_season)
+    else:
+        projected = _add_quality(projected, base, league, OFFENSE_QUALITY_PERSISTENCE)
 
     return {
         "team": team,
@@ -240,6 +242,20 @@ def project_fingerprint(
         "is_new": is_new,
         "confidence": staff.confidence,
     }
+
+
+def _add_quality(projected: pd.Series, base: pd.Series | None,
+                 league: pd.Series, persistence: dict) -> pd.Series:
+    """Regress a result column toward the league mean by its own persistence."""
+    out = projected.copy()
+    for trait, r in persistence.items():
+        lg = league.get(trait, np.nan)
+        if not np.isfinite(lg):
+            continue
+        observed = float(base.get(trait, np.nan)) if base is not None else np.nan
+        out[trait] = float(lg) if not np.isfinite(observed) else \
+            float(lg) + (observed - float(lg)) * float(r)
+    return out
 
 
 def _add_defense_quality(projected: pd.Series, base: pd.Series | None,

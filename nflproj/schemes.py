@@ -147,6 +147,7 @@ def offense_fingerprint(df: pd.DataFrame, league: dict | None = None) -> dict:
         "screen_rate": _charted_rate(dropbacks, "is_screen_pass", league, S),
         # --- passing shape -----------------------------------------------------
         "adot": float(df["air_yards"].mean(skipna=True)),
+        "ypa": _ypa(df),
         "deep_rate": rate((df["air_yards"] >= 20).sum(), df["air_yards"].notna().sum(), "deep_rate", 0.11),
         "yac_share": _yac_share(df),
         "cpoe": float(df["cpoe"].mean(skipna=True)) if "cpoe" in df else np.nan,
@@ -191,6 +192,20 @@ def _charted_rate(df: pd.DataFrame, col: str, league: dict, strength: float) -> 
     if valid.sum() == 0:
         return np.nan
     return _rate(s[valid].astype(float).sum(), valid.sum(), league.get(col.replace("is_", "") + "_rate", 0.2), strength)
+
+
+def _ypa(df: pd.DataFrame) -> float:
+    """Passing yards per attempt: yards on completions over attempts, sacks excluded.
+
+    A result column rather than an identity one, so it is carried by measured
+    persistence rather than followed to a coordinator's next job.
+    """
+    att = df[(df["pass"].fillna(0) > 0) & (df["sack"].fillna(0) == 0)]
+    n = len(att)
+    if n == 0:
+        return np.nan
+    yards = att.loc[att["complete_pass"].fillna(0) > 0, "yards_gained"].sum()
+    return float(yards / n)
 
 
 def _yac_share(df: pd.DataFrame) -> float:
@@ -381,3 +396,12 @@ DEFENSE_QUALITY_PERSISTENCE = {
     "rz_td_allowed": 0.169,
 }
 DEFENSE_QUALITY = list(DEFENSE_QUALITY_PERSISTENCE)
+
+# The offensive mirror. Only passing efficiency is carried this way, and it is
+# far stickier than anything on the defensive side: a team's yards per attempt
+# carries at r = 0.42 season to season, against 0.11 for yards per attempt
+# allowed. Offences keep their quarterback; defences do not keep their schedule.
+OFFENSE_QUALITY_PERSISTENCE = {
+    "ypa": 0.418,
+}
+OFFENSE_QUALITY = list(OFFENSE_QUALITY_PERSISTENCE)

@@ -11,6 +11,7 @@ from . import venues as V
 from . import projections as pj
 from . import usage as usage_mod
 from . import schemes
+from . import personnel
 from .config import LAST_COMPLETED_SEASON, PROJECTION_SEASON, TEAMS, normalize_team
 
 # Positions worth projecting, and how far down the chart to go.
@@ -75,7 +76,6 @@ def project_team(
     opp_def = projections_map[opp]["defense"]["projected"] if opp in projections_map else None
 
     protection = (ctx.protection or {}).get(team) if getattr(ctx, "protection", None) else None
-    volume = pj.team_volume(scheme, game_ctx, opp_scheme, env=env, protection=protection)
     adj = pj.defense_adjustment(opp_def, league_def)
 
     # A caller can supply a point-in-time chart; otherwise use the latest.
@@ -87,6 +87,17 @@ def project_team(
 
     qb_row = chart[chart["pos_abb"] == "QB"].sort_values("pos_rank")
     qb_id = qb_row.iloc[0].get("gsis_id") if len(qb_row) else None
+    # Volume is projected twice: once from the offence alone, to learn what its
+    # own history implies, and again with the passer's correction applied.
+    base_volume = pj.team_volume(scheme, game_ctx, opp_scheme, env=env,
+                                 protection=protection)
+    qb_vol = personnel.qb_volume_multiplier(
+        ctx.qb_profiles, qb_id, base_volume["attempts"])
+    volume = pj.team_volume(scheme, game_ctx, opp_scheme, env=env,
+                            protection=protection, qb_volume=qb_vol)
+    # The passer's projected efficiency, which his receivers inherit.
+    qb_eff = personnel.qb_passing_line(
+        ctx.qb_profiles, qb_id, scheme, getattr(ctx, "league_offense", None))["ypa_multiplier"]
 
     for _, row in chart.iterrows():
         pos, rank = row["pos_abb"], int(row["pos_rank"])
@@ -101,7 +112,7 @@ def project_team(
                 player_id=pid, name=name, team=team, usage_hist=usage_hist,
                 qb_hist=ctx.qb_profiles, volume=volume, sampler=sampler,
                 scheme=scheme, def_adj=adj, n_sims=n_sims, rng=rng, env=env,
-                protection=protection,
+                protection=protection, league=getattr(ctx, "league_offense", None),
             ))
         else:
             shared, continuity = usage_mod.qb_continuity(ctx.plays, qb_id, pid)
@@ -118,6 +129,7 @@ def project_team(
                 env=env, rush_efficiency=rush_eff, separation=sep,
                 draft=getattr(ctx, "draft", None),
                 current_season=getattr(ctx, "current_season", None),
+                qb_efficiency=qb_eff,
             ))
 
     _rebalance(results, volume)

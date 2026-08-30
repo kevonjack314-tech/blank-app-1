@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from nflproj import availability as av
-from nflproj import coaches, playbook, projections as pj, schemes, usage as um
+from nflproj import coaches, lotto, personnel, playbook, projections as pj, schemes, usage as um
 
 
 # --------------------------------------------------------------------- rates
@@ -909,3 +909,149 @@ def test_team_form_weight_grows_with_plays():
         w = n / (n + K)
         assert 0 < w < 1
     assert 100 / (100 + K) < 900 / (900 + K)
+
+
+# ---------------------------------------------------------------- lotto plays
+def test_doubling_gets_harder_as_the_projection_grows():
+    """The finding the whole module rests on, and the one that is easiest to
+    lose: at a fixed multiple the tail thins steeply with the level."""
+    ps = [lotto.tail_probability("rec_yards", mu, 2 * mu) for mu in (25, 40, 60, 80)]
+    assert all(np.isfinite(p) for p in ps)
+    assert ps == sorted(ps, reverse=True)
+    # and by a lot, not a rounding
+    assert ps[0] > 4 * ps[-1]
+
+
+def test_explosive_receivers_have_the_fatter_tail_at_a_fixed_level():
+    """Holding the projection fixed reverses the raw comparison, which was
+    confounded by explosive players simply having larger averages."""
+    low = lotto.tail_probability("rec_yards", 30, 60, burst=0.06)
+    league = lotto.tail_probability("rec_yards", 30, 60, burst=0.138)
+    high = lotto.tail_probability("rec_yards", 30, 60, burst=0.24)
+    assert low < league < high
+
+
+def test_burst_does_not_move_a_market_it_was_not_fitted_on():
+    """The rushing term was indistinguishable from zero, so it is not carried."""
+    a = lotto.tail_probability("rush_yards", 40, 80, burst=0.05)
+    b = lotto.tail_probability("rush_yards", 40, 80, burst=0.30)
+    assert a == pytest.approx(b)
+
+
+def test_blend_hands_over_to_the_fitted_curve_in_the_tail():
+    """The simulator was measured too fat above forty projected yards, so its
+    weight has to fall away as the line moves out."""
+    assert lotto.sim_weight(1.0) == pytest.approx(1.0)
+    assert lotto.sim_weight(1.5) < lotto.sim_weight(1.25)
+    assert lotto.sim_weight(3.0) == pytest.approx(lotto.SIM_WEIGHT_FLOOR)
+    # an optimistic simulation gets pulled down toward the fitted number
+    fitted = lotto.tail_probability("rec_yards", 60, 120)
+    blended = lotto.blended_probability(0.20, "rec_yards", 60, 120)
+    assert fitted < blended < 0.20
+
+
+def test_blend_returns_the_simulation_where_no_curve_exists():
+    assert lotto.blended_probability(0.07, "pass_yards", 200, 400) == pytest.approx(0.07)
+
+
+def test_passing_longshots_are_not_offered():
+    """No fitted tail curve, and a passing projection that only just matches
+    the trivial baseline - so the market is left out rather than guessed at."""
+    assert "pass_yards" not in lotto.TAIL_COEFFICIENTS
+    assert "pass_yards" not in lotto.MIN_PROJECTION
+
+
+def test_fair_odds_round_trip_through_the_lotto_range():
+    for p in (0.03, 0.05, 0.10, 0.25):
+        odds = lotto.probability_to_american(p)
+        assert odds >= lotto.MIN_LOTTO_ODDS or p > 0.28
+        assert lotto.american_to_probability(odds) == pytest.approx(p, abs=1e-9)
+
+
+def test_a_lotto_board_needs_a_price_before_it_claims_an_edge():
+    board = pd.DataFrame([{"player": "A", "market": "Receiving yards", "line": 100.5,
+                           "p_model": 0.09}])
+    priced = lotto.price_lotto(board, odds=None)
+    assert priced["ev_per_100"].isna().all()
+    priced = lotto.price_lotto(board, odds={("A", "Receiving yards", 100.5): 1200})
+    assert priced["ev_per_100"].iloc[0] > 0     # 9% at +1200 is a positive number
+    assert priced["prob_edge"].iloc[0] == pytest.approx(0.09 - 100 / 1300)
+
+
+def test_lotto_lines_land_on_numbers_a_book_would_hang():
+    for stat, value in (("rec_yards", 62.0), ("rec_yards", 137.0), ("pass_yards", 388.0)):
+        line = lotto._round_line(value, stat)
+        assert line % 1 == pytest.approx(0.5)
+
+
+# ------------------------------------------------- quarterback passing efficiency
+def _qb_prof(pid, ypa, adot, attempts, season=2025):
+    return pd.DataFrame([{"player_id": pid, "season": season, "ypa": ypa, "adot": adot,
+                          "attempts": attempts, "dropbacks": attempts}])
+
+
+def test_passing_efficiency_is_not_taken_from_the_scheme_alone():
+    """Reading yards per attempt off the team fingerprint at full strength
+    ranked quarterbacks backwards on the holdout (corr -0.09)."""
+    scheme = pd.Series({"ypa": 8.4, "adot": 9.0})
+    league = pd.Series({"ypa": 7.12, "adot": 7.85})
+    line = personnel.qb_passing_line(pd.DataFrame(), None, scheme, league)
+    # a rookie on a high-efficiency offence keeps only the team's share
+    assert line["ypa"] < 8.4
+    assert line["ypa"] == pytest.approx(7.12 + personnel.YPA_WEIGHT_TEAM * (8.4 - 7.12))
+
+
+def test_a_passer_with_history_moves_his_own_projection():
+    scheme = pd.Series({"ypa": 7.12, "adot": 7.85})
+    league = pd.Series({"ypa": 7.12, "adot": 7.85})
+    good = personnel.qb_passing_line(_qb_prof("A", 8.6, 9.5, 600), "A", scheme, league)
+    poor = personnel.qb_passing_line(_qb_prof("B", 5.9, 6.5, 600), "B", scheme, league)
+    assert good["ypa"] > league["ypa"] > poor["ypa"]
+    assert good["adot"] > poor["adot"]
+
+
+def test_a_small_sample_passer_is_pulled_back_toward_his_offence():
+    scheme = pd.Series({"ypa": 7.12, "adot": 7.85})
+    league = pd.Series({"ypa": 7.12, "adot": 7.85})
+    many = personnel.qb_passing_line(_qb_prof("A", 8.6, 9.5, 700), "A", scheme, league)
+    few = personnel.qb_passing_line(_qb_prof("B", 8.6, 9.5, 60), "B", scheme, league)
+    assert many["ypa"] > few["ypa"]
+    assert many["evidence"] > few["evidence"]
+
+
+def test_offensive_quality_is_regressed_by_its_measured_persistence():
+    league = pd.Series({"ypa": 7.12})
+    base = pd.Series({"ypa": 8.12})
+    out = coaches._add_quality(pd.Series({"ypa": 8.12}), base, league,
+                               schemes.OFFENSE_QUALITY_PERSISTENCE)
+    assert out["ypa"] == pytest.approx(7.12 + 1.0 * schemes.OFFENSE_QUALITY_PERSISTENCE["ypa"])
+    # and passing efficiency is far stickier than the defensive mirror
+    assert (schemes.OFFENSE_QUALITY_PERSISTENCE["ypa"]
+            > schemes.DEFENSE_QUALITY_PERSISTENCE["ypa_allowed"])
+
+
+def test_a_player_never_appears_twice_on_the_same_market():
+    """Both sides of a mid-range line can sit in the confidence band at once
+    and say the same thing; the board should carry the stronger one only."""
+    from nflproj import picks as pk
+
+    class _Fake:
+        away, home = "AAA", "BBB"
+        players = {"P": None}
+        meta = {"P": {"position": "WR", "team": "AAA", "p_active": 0.95,
+                      "depth_rank": 1, "player_id": "x"}}
+
+        def active_mask(self, *a):
+            return np.ones(4000, dtype=bool)
+
+        def stat(self, player, stat):
+            rng = np.random.default_rng(0)
+            if stat == "rec_yards":
+                return rng.gamma(2.0, 25.0, 4000)
+            if stat == "total_td":
+                return rng.poisson(0.4, 4000).astype(float)
+            return None
+
+    out = pk.best_picks([_Fake()], min_prob=0.30, max_prob=0.95, top_n=20)
+    if not out.empty:
+        assert not out.duplicated(subset=["player", "stat"]).any()

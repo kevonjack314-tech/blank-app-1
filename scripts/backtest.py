@@ -37,6 +37,7 @@ def build_holdout_context():
         chart=personnel.latest_depth_chart(depth),
         fronts=personnel.base_defensive_front(depth),
         qb_profiles=personnel.qb_profiles(plays),
+        league_offense=schemes.league_means(fp, "offense", 2024),
         # No staff registry for a past season: treat every team as continuity so
         # the test measures the projection chain, not the coaching research.
         staffs={t: coaches.Staff(team=t, continuity=True) for t in pipeline.TEAMS},
@@ -65,8 +66,23 @@ def actuals_2025() -> pd.DataFrame:
              rush_td=("rush_touchdown", "sum"))
         .reset_index().rename(columns={"rusher_player_id": "player_id", "posteam": "team"})
     )
+    # Quarterback passing, so the passing line is held to the same test as the
+    # rest. Attempts exclude sacks; only completions carry yards.
+    throws = p[(p["pass"].fillna(0) > 0) & (p["sack"].fillna(0) == 0)
+               & p["passer_player_id"].notna()]
+    pas = (
+        throws.groupby(["game_id", "posteam", "passer_player_id"])
+        .agg(attempts=("play_id", "size"),
+             pass_yards=("yards_gained",
+                         lambda s: float(s[p.loc[s.index, "complete_pass"].fillna(0) > 0].sum())),
+             pass_td=("pass_touchdown", "sum"))
+        .reset_index().rename(columns={"passer_player_id": "player_id", "posteam": "team"})
+    )
+
     a = rec.merge(rush, on=["game_id", "team", "player_id"], how="outer")
-    for c in ("targets", "rec_yards", "rec_td", "carries", "rush_yards", "rush_td"):
+    a = a.merge(pas, on=["game_id", "team", "player_id"], how="outer")
+    for c in ("targets", "rec_yards", "rec_td", "carries", "rush_yards", "rush_td",
+              "attempts", "pass_yards", "pass_td"):
         a[c] = pd.to_numeric(a[c], errors="coerce").fillna(0.0)
     a["scrimmage_yards"] = a["rec_yards"] + a["rush_yards"]
     a["total_td"] = a["rec_td"] + a["rush_td"]
@@ -149,7 +165,7 @@ def run(weeks=range(1, 19), n_sims=4000, inseason: bool = False) -> pd.DataFrame
     proj = pd.DataFrame(rows)
     merged = proj.merge(act, on=["game_id", "team", "player_id"], how="left")
     for c in ("targets", "rec_yards", "rec_td", "carries", "rush_yards", "rush_td",
-              "scrimmage_yards", "total_td"):
+              "scrimmage_yards", "total_td", "attempts", "pass_yards", "pass_td"):
         merged[c] = merged[c].fillna(0.0)
     return merged
 
@@ -173,6 +189,18 @@ def report(m: pd.DataFrame) -> None:
         print(f"  {label:18s} MAE {err.abs().mean():6.2f}   bias {err.mean():+6.2f}   "
               f"corr {d[proj_col].corr(d[act_col]):.3f}   proj_mean {d[proj_col].mean():6.2f} "
               f"act_mean {d[act_col].mean():6.2f}")
+
+    # Quarterback passing is reported separately and conditional on playing:
+    # an unconditional projection carries the chance he is inactive, which is
+    # right for pricing and wrong for measuring whether the passing line ranks.
+    qb = m[(m["pos"] == "QB") & (m["proj_pass_yards"] > 0) & (m["attempts"] >= 10)]
+    if len(qb) > 30:
+        cond = qb["proj_pass_yards"] / qb["p_active"].clip(lower=0.2)
+        err = cond - qb["pass_yards"]
+        print(f"\n=== quarterback passing (n={len(qb)}, conditional on playing) ===")
+        print(f"  passing yards      MAE {err.abs().mean():6.2f}   bias {err.mean():+6.2f}   "
+              f"corr {cond.corr(qb['pass_yards']):.3f}   proj_mean {cond.mean():6.2f} "
+              f"act_mean {qb['pass_yards'].mean():6.2f}")
 
     print()
     print("=== touchdown calibration (skill players) ===")

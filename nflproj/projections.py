@@ -20,6 +20,7 @@ import pandas as pd
 
 from .config import LEAGUE_PLAYS_PER_GAME, POINTS_PER_TD, PRIOR_STRENGTH
 from . import usage as usage_mod
+from . import personnel
 
 # Fitted on 2022-2025 team-games: offensive touchdowns given points scored.
 TD_FROM_POINTS = (-0.4628, 0.1255)
@@ -61,7 +62,8 @@ def expected_offensive_tds(points: float) -> float:
 
 
 def team_volume(scheme: pd.Series, ctx: GameContext, opp_scheme: pd.Series | None = None,
-                env: dict | None = None, protection: float | None = None) -> dict:
+                env: dict | None = None, protection: float | None = None,
+                qb_volume: float = 1.0) -> dict:
     """Project a team's play volume and scoring for one game.
 
     ``env`` carries the scoring environment - wind, roof, divisional
@@ -89,6 +91,10 @@ def team_volume(scheme: pd.Series, ctx: GameContext, opp_scheme: pd.Series | Non
         pass_rate -= 0.010 * float(ctx.spread_line)
     if env:
         pass_rate += float(env.get("pass_rate_delta", 0.0))
+    # Who is under centre moves pass volume more than the offence's own history
+    # does. See personnel.qb_volume_multiplier - this trades runs for passes
+    # rather than adding plays, because a team that throws more runs less.
+    pass_rate *= float(np.clip(qb_volume, 0.72, 1.32))
     pass_rate = float(np.clip(pass_rate, 0.34, 0.74))
 
     dropbacks = plays * pass_rate
@@ -358,7 +364,7 @@ def project_skill_player(
     qb_continuity: float = 1.0, env: dict | None = None,
     rush_efficiency: dict | None = None, separation: float | None = None,
     draft: pd.DataFrame | None = None, protection: float | None = None,
-    current_season: int | None = None,
+    current_season: int | None = None, qb_efficiency: float = 1.0,
 ) -> PlayerProjection:
     """Simulate a non-quarterback's receiving and rushing line for one game."""
     rng = rng or np.random.default_rng()
@@ -440,6 +446,10 @@ def project_skill_player(
     expected = sampler.expected_ypr(adot)
     residual = ypr_player / expected if expected > 0 else 1.0
     rec_scale = float(np.clip(residual, 0.82, 1.22)) * def_adj["pass_yards"]
+    # Who is throwing it. A receiver's own residual was earned with whatever
+    # quarterback he had, so this carries the passer's projected efficiency
+    # relative to league average on top of it.
+    rec_scale *= float(np.clip(qb_efficiency, 0.80, 1.22))
     if env:
         rec_scale *= float(env.get("pass_yards_mult", 1.0))
         rush_scale *= float(env.get("rush_yards_mult", 1.0))
@@ -494,6 +504,7 @@ def project_quarterback(
     volume: dict, sampler: TouchSampler, scheme: pd.Series, def_adj: dict,
     n_sims: int = 20000, rng: np.random.Generator | None = None,
     env: dict | None = None, protection: float | None = None,
+    league: pd.Series | None = None,
 ) -> PlayerProjection:
     """Simulate a quarterback's passing line plus their own rushing."""
     rng = rng or np.random.default_rng()
@@ -506,8 +517,17 @@ def project_quarterback(
     attempts = _nb_sample(rng, volume["attempts"], VOLUME_DISPERSION["attempt"], n_sims)
     completions = rng.binomial(attempts, base_comp)
 
-    adot = float(scheme.get("adot", 7.8))
-    pass_scale = def_adj["pass_yards"]
+    # Depth of target and yards per attempt both come from the passer blended
+    # with his offence, not from the offence alone. Taking them from the scheme
+    # at full strength ranked quarterbacks backwards: see personnel.qb_passing_line.
+    line = personnel.qb_passing_line(qb_hist, player_id, scheme, league)
+    adot = line["adot"]
+    # The depth mixture already delivers yards for a throw of this length, so
+    # the scale carries only what the passer adds beyond it.
+    expected_ypc = sampler.expected_ypr(adot)
+    target_ypc = line["ypa"] / max(base_comp, 0.35)
+    pass_scale = def_adj["pass_yards"] * float(
+        np.clip(target_ypc / expected_ypc if expected_ypc > 0 else 1.0, 0.82, 1.22))
     if env:
         adot *= float(env.get("deep_rate_mult", 1.0))
         pass_scale *= float(env.get("pass_yards_mult", 1.0))
@@ -531,7 +551,8 @@ def project_quarterback(
         player_id=player_id, name=name, team=team, position="QB", depth_rank=1,
         inputs={
             "exp_attempts": volume["attempts"], "completion_pct": base_comp,
-            "adot": adot, "exp_qb_carries": volume["qb_runs"] + volume["scrambles"],
+            "adot": adot, "ypa": line["ypa"], "ypa_evidence": line["evidence"],
+            "exp_qb_carries": volume["qb_runs"] + volume["scrambles"],
             "pass_td_lambda": volume["pass_td"],
         },
         samples={

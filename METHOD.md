@@ -179,6 +179,45 @@ players actually on the roster:
 | Sack rate allowed | 45% |
 | Depth of target, deep rate | 40% |
 | YAC share | 30% |
+| Pass attempts per game | 77% |
+| Yards per attempt | 43% |
+
+The last two rows are recent and were added because their absence was doing real
+damage. Passing volume and passing efficiency were both taken entirely from the
+team's scheme fingerprint, at full strength and with no regression — the
+quarterback standing in the offense contributed nothing to either. On the 2025
+holdout that projected passing yards with **no skill at all**: correlation −0.09
+against actual, where the trivial baseline of a passer's own prior yards per game
+manages +0.18. It was not merely weak, it was pointed the wrong way, because
+volume and efficiency trade off against each other: the offenses that throw most
+are usually the ones doing it badly and from behind, and with efficiency pinned
+to the league mean, volume was all that was left.
+
+Both weights were fitted rather than chosen. Volume, on 448 quarterback games:
+
+    attempts = league + 0.772 × (his attempts/game − league)
+                      + 0.304 × (his offense's attempts/game − league)
+
+and efficiency, on 191 quarterback season pairs from 2018–2025:
+
+    ypa_next  = league + 0.181 × (his ypa − league)  + 0.239 × (team ypa − league)
+    adot_next = league + 0.270 × (his aDOT − league) + 0.192 × (team aDOT − league)
+
+Depth of target follows the passer more than the scheme; efficiency slightly
+less; volume mostly. Applying all three moved held-out passing yards from −0.08
+to **+0.07** and cut the error from 68.8 to 61.5 yards, and it improved the skill
+players too, because a quarterback's efficiency is inherited by his receivers:
+targets 0.604 → 0.614, receiving yards 0.533 → 0.546.
+
+That is honest progress and not a solved problem. **+0.07 still only matches the
+trivial baseline**, which is why the app does not offer longshot props on
+quarterback passing yards.
+
+Team passing efficiency is carried the same way defensive quality is — regressed
+by its own measured persistence rather than followed to a coordinator's next job
+— but it survives far better: a team's yards per attempt carries at r = 0.42
+season to season, against 0.11 for yards per attempt allowed. Offenses keep
+their quarterback; defenses do not keep their schedule.
 
 The clearest case: Todd Monken's Baltimore offense ran designed quarterback runs
 at 4.2% of snaps, because Lamar Jackson was taking the snaps. Carried to
@@ -525,6 +564,64 @@ grid. An earlier version hung a fixed set of round numbers on everybody, which
 handed a backup running back a 79.5-yard rushing line and then ranked the under
 at 90% — confidence manufactured by an absurd line rather than by knowing
 anything. Markets below a per-statistic floor are not offered at all.
+
+## Longshots, and where the tail actually is
+
+A lotto play is a prop written far out on the right tail — a receiver projected
+for fifty yards, bet to reach a hundred. Pricing one is a question about the
+*shape* of a distribution rather than its middle, and two of the three things
+that turned out to matter were the opposite of what the work assumed going in.
+
+**The level gradient dominates everything.** How often a player doubles his
+projection depends overwhelmingly on how big that projection is. On the 2025
+holdout, receiving:
+
+| projected | P(1.5×) | P(2×) | P(2.5×) |
+| --- | --- | --- | --- |
+| ~27 yards | 28.1% | 18.3% | 11.3% |
+| ~41 yards | 23.5% | 12.8% | 6.6% |
+| ~60 yards | 20.5% | 6.8% | 2.5% |
+| ~78 yards | 12.3% | 0.9% | 0.0% |
+
++446 against +9900 at the same nominal multiple. Any claim about longshots that
+does not condition on the projection is measuring this gradient and nothing else.
+
+**Explosiveness fattens the tail — but the raw comparison says the opposite.**
+Quartiling receivers by their share of catches gaining twenty or more yards, the
+most explosive quartile appeared *less* likely to double its own average (6.8%
+against 10.6%). That is an artifact: explosive receivers have higher averages, so
+"twice his average" is a bigger number of yards for them. Holding the projection
+fixed reverses it — at 20–40 projected yards, explosive receivers double 22.5% of
+the time against 13.1% for the rest (z = 3.9), and depth of target orders the
+same way (12.4% shallowest third, 22.4% deepest). Above about sixty projected
+yards the effect washes out. The same term fitted on rushing was
+indistinguishable from zero and is not carried: a back's long run does not appear
+predictable from how often he has broken one before.
+
+**The simulator's own tail is too fat.** Comparing the joint simulation's
+P(twice the projection) against the season: at ~66 projected receiving yards it
+said 10.5% where the holdout says roughly 5%; at ~71 projected rushing yards,
+7.0% against roughly 3.5%. Below forty projected yards it is close to right. A
+bootstrap of per-touch outcomes has nothing in it that stops a good day
+compounding, and reality does.
+
+So longshot probabilities are not read off the simulation. A logistic tail
+regression is fitted directly to holdout outcomes over multiples from 1.25× to
+3×, with features log(multiple), its square, log(projection/40) and their
+interaction — the interaction is the level gradient and is the largest term in
+every fit — plus an explosiveness term where it was supported. The simulation and
+the curve are blended in log-odds, with the simulation's weight falling from 1.0
+at the projection to a floor of 0.25 at twice it and beyond: near the middle the
+simulation knows things the curve cannot see (opponent, game total, who else is
+on the field), and out in the tail it is the thing measured wrong.
+
+The board is ranked by how much likelier a player is to reach the line than a
+generic player projected for the same total — not by probability. Ranking by
+probability sorts by whoever has the smallest projection, since a small number is
+the easiest one to double, which is the trap the whole section exists to avoid.
+
+There are no book prices in this data, so none of this is an edge claim. It is a
+probability, a fair price, and a statement about tail shape.
 
 ## Narratives, and which ones survive contact with the data
 

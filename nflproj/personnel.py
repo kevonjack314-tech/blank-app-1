@@ -144,7 +144,160 @@ def qb_profiles(plays: pd.DataFrame) -> pd.DataFrame:
     # Scrambles are dropbacks that became runs; the denominator is all dropbacks.
     prof["scramble_rate"] = prof["scrambles"] / (prof["dropbacks"] + prof["scrambles"]).clip(lower=1)
     prof["sack_rate_allowed"] = prof["sacks"] / prof["dropbacks"].clip(lower=1)
+
+    # Passing efficiency, so a quarterback's own yards per attempt can be
+    # separated from his offence's. Attempts exclude sacks and scrambles, which
+    # are dropbacks that never became a throw.
+    throws = dropbacks[(dropbacks["pass"].fillna(0) > 0) & (dropbacks["sack"].fillna(0) == 0)]
+    eff = (
+        throws.groupby(["season", "passer_player_id"])
+        .agg(attempts=("play_id", "size"),
+             pass_yards=("yards_gained", lambda s: float(s[s > -100].sum())))
+        .reset_index()
+        .rename(columns={"passer_player_id": "player_id"})
+    )
+    # Only completions carry passing yards.
+    comp_yards = (
+        throws[throws["complete_pass"].fillna(0) > 0]
+        .groupby(["season", "passer_player_id"])["yards_gained"].sum()
+        .rename("pass_yards").reset_index()
+        .rename(columns={"passer_player_id": "player_id"})
+    )
+    eff = eff.drop(columns=["pass_yards"]).merge(comp_yards, on=["season", "player_id"], how="left")
+    eff["pass_yards"] = eff["pass_yards"].fillna(0.0)
+    eff["ypa"] = eff["pass_yards"] / eff["attempts"].clip(lower=1)
+    games = (
+        throws.groupby(["season", "passer_player_id"])["game_id"].nunique()
+        .rename("qb_games").reset_index().rename(columns={"passer_player_id": "player_id"})
+    )
+    eff = eff.merge(games, on=["season", "player_id"], how="left")
+    eff["attempts_per_game"] = eff["attempts"] / eff["qb_games"].clip(lower=1)
+    prof = prof.merge(eff[["season", "player_id", "attempts", "ypa", "qb_games",
+                           "attempts_per_game"]],
+                      on=["season", "player_id"], how="left")
     return prof
+
+
+# How much of a deviation in yards per attempt survives to next season, fitted
+# jointly on 191 quarterback season pairs from 2018-2025:
+#
+#     ypa_next = league + 0.181 * (qb_ypa - league) + 0.239 * (team_ypa - league)
+#
+# The two carry about equally, which is the whole point. The model previously
+# took passing efficiency entirely from the team's scheme fingerprint, at full
+# strength and with no regression at all. That ranked quarterbacks backwards on
+# the 2025 holdout - correlation -0.09 between projected and actual passing
+# yards, because volume and efficiency trade off: the offences that throw most
+# are usually the ones doing it badly and from behind.
+YPA_WEIGHT_QB = 0.181
+YPA_WEIGHT_TEAM = 0.239
+# aDOT is stickier and leans the other way, toward the passer:
+#     adot_next = league + 0.270 * (qb_adot - league) + 0.192 * (team_adot - league)
+ADOT_WEIGHT_QB = 0.270
+ADOT_WEIGHT_TEAM = 0.192
+# Attempts before a quarterback's own history counts at full weight.
+PASSING_EVIDENCE_ATTEMPTS = 350.0
+LEAGUE_YPA = 7.12
+LEAGUE_ADOT = 7.85
+
+
+# How much of a passer's volume is his own rather than his offence's. Fitted on
+# 448 quarterback games from 2025 against 2022-2024 history:
+#
+#     attempts = league + 0.772 * (his attempts/game - league)
+#                       + 0.304 * (his offence's attempts/game - league)
+#
+# His own history carries most of it, and dropping it is expensive. Taking
+# volume from the team alone - which is what the model did - projected passing
+# yards with no skill at all on the 2025 holdout: correlation -0.08 against
+# +0.18 for the trivial baseline of the passer's own prior yards per game. A
+# quarterback is not interchangeable with the offence he is standing in.
+ATTEMPT_WEIGHT_QB = 0.772
+ATTEMPT_WEIGHT_TEAM = 0.304
+LEAGUE_ATTEMPTS_PER_GAME = 31.2
+ATTEMPT_MULTIPLIER_CLIP = (0.72, 1.32)
+
+
+def qb_volume_multiplier(prof: pd.DataFrame, player_id: str | None,
+                         team_attempts_per_game: float | None = None) -> float:
+    """How far this passer's own history moves attempts off the team's number.
+
+    Returned as a multiplier so the caller keeps its own game-level variation -
+    opponent, weather, projected game script - and only the level moves.
+    """
+    lg = LEAGUE_ATTEMPTS_PER_GAME
+    team = float(team_attempts_per_game) if team_attempts_per_game else lg
+    if not np.isfinite(team) or team <= 0:
+        team = lg
+
+    own = blend_player_history(prof, player_id, ["attempts_per_game"]) if player_id else None
+    if own is None or not np.isfinite(own.get("attempts_per_game", np.nan)):
+        return 1.0
+    d = prof[prof["player_id"] == player_id]
+    att = float(d["attempts"].fillna(0.0).sum()) if "attempts" in d else 0.0
+    evidence = float(min(att / PASSING_EVIDENCE_ATTEMPTS, 1.0))
+    if evidence <= 0:
+        return 1.0
+
+    qb_att = float(own["attempts_per_game"])
+    blended = (lg + ATTEMPT_WEIGHT_QB * evidence * (qb_att - lg)
+               + ATTEMPT_WEIGHT_TEAM * (team - lg))
+    # The denominator is what the team's number alone would have said, so the
+    # multiplier is exactly the correction and nothing else.
+    return float(np.clip(blended / team, *ATTEMPT_MULTIPLIER_CLIP))
+
+
+def qb_passing_line(prof: pd.DataFrame, player_id: str | None, scheme: pd.Series,
+                    league: pd.Series | None = None) -> dict:
+    """A quarterback's projected aDOT and yards per attempt.
+
+    Two claims are being separated. How far the ball travels and how much it
+    gains are partly the offence - the same coordinator calls the same routes
+    for whoever is under centre - and partly the passer, and the split is not
+    the same for the two: depth of target follows the quarterback more than the
+    scheme, efficiency slightly less. Both are regressed toward the league mean
+    by the weights above, so neither the team's number nor the player's is used
+    at full strength.
+
+    A quarterback with no history at all is projected as his offence, regressed;
+    that is the right answer for a rookie, whose own evidence is zero.
+    """
+    league = league if league is not None else pd.Series(dtype=float)
+    lg_ypa = float(league.get("ypa", LEAGUE_YPA))
+    lg_adot = float(league.get("adot", LEAGUE_ADOT))
+    if not np.isfinite(lg_ypa):
+        lg_ypa = LEAGUE_YPA
+    if not np.isfinite(lg_adot):
+        lg_adot = LEAGUE_ADOT
+
+    team_ypa = float(scheme.get("ypa", lg_ypa))
+    team_adot = float(scheme.get("adot", lg_adot))
+    if not np.isfinite(team_ypa):
+        team_ypa = lg_ypa
+    if not np.isfinite(team_adot):
+        team_adot = lg_adot
+
+    own = blend_player_history(prof, player_id, ["ypa", "adot"]) if player_id else None
+    qb_ypa, qb_adot, evidence = lg_ypa, lg_adot, 0.0
+    if own is not None:
+        d = prof[prof["player_id"] == player_id]
+        att = float(d["attempts"].fillna(0.0).sum()) if "attempts" in d else 0.0
+        evidence = float(min(att / PASSING_EVIDENCE_ATTEMPTS, 1.0))
+        if np.isfinite(own.get("ypa", np.nan)):
+            qb_ypa = float(own["ypa"])
+        else:
+            evidence = 0.0
+        if np.isfinite(own.get("adot", np.nan)):
+            qb_adot = float(own["adot"])
+
+    ypa = lg_ypa + YPA_WEIGHT_QB * evidence * (qb_ypa - lg_ypa) \
+        + YPA_WEIGHT_TEAM * (team_ypa - lg_ypa)
+    adot = lg_adot + ADOT_WEIGHT_QB * evidence * (qb_adot - lg_adot) \
+        + ADOT_WEIGHT_TEAM * (team_adot - lg_adot)
+    return {"ypa": float(np.clip(ypa, 5.4, 9.0)),
+            "adot": float(np.clip(adot, 5.5, 10.5)),
+            "evidence": evidence,
+            "ypa_multiplier": float(np.clip(ypa / lg_ypa, 0.80, 1.22))}
 
 
 def blend_player_history(prof: pd.DataFrame, player_id: str, cols: list[str],

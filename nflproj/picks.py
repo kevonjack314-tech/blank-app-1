@@ -231,8 +231,14 @@ def best_picks(games: list, min_prob: float = 0.58, max_prob: float = 0.80,
     out["edge_score"] = out["probability"] * out["p_active"]
     out = out.sort_values("edge_score", ascending=False)
 
+    # One market yields two sides, and for a mid-range line both can sit in the
+    # band at once - "over 14.5" and "under 49.5" are both true most weeks and
+    # both say the same thing, that he lands in the middle. Keep the stronger.
+    out = out.groupby(["player", "stat"], sort=False).head(1)
+
     # One player offers many correlated markets, and quarterbacks offer the most
     # predictable ones. Without a cap the board fills with a handful of names.
+    out = out.sort_values("edge_score", ascending=False)
     out = out.groupby("player", sort=False).head(max_per_player)
 
     cols = ["matchup", "player", "team", "pos", "market", "line", "side",

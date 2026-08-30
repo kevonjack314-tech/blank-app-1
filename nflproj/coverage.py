@@ -147,9 +147,25 @@ def offense_vs_coverage(plays: pd.DataFrame, team: str, seasons: tuple | None = 
             "comp_rate": float(sub["complete_pass"].mean(skipna=True)),
             "adot": float(sub["air_yards"].mean(skipna=True)),
             "sack_rate": float(sub["sack"].fillna(0).mean()),
-            "motion_rate": float(sub["is_motion"].fillna(False).mean()) if "is_motion" in sub else np.nan,
+            "motion_rate": _numeric_mean(sub, "is_motion"),
         })
     return pd.DataFrame(rows)
+
+
+def _numeric_mean(df: pd.DataFrame, col: str) -> float:
+    """Mean of a flag column that may have been categoricalised.
+
+    ``data.compact`` stores low-cardinality columns as categoricals to keep the
+    process inside its memory budget, and a categorical has no mean - it raises
+    rather than coercing, which took the coverage tables down entirely. Casting
+    through float is the fix; the values are booleans either way.
+    """
+    if col not in df.columns:
+        return float("nan")
+    s = df[col]
+    if isinstance(s.dtype, pd.CategoricalDtype):
+        s = s.astype(object)
+    return float(pd.to_numeric(s, errors="coerce").fillna(0.0).mean())
 
 
 def route_profile(plays: pd.DataFrame, team: str | None = None,

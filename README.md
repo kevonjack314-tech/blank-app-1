@@ -55,39 +55,30 @@ waiting. Comment out that line in the `Dockerfile` to fetch lazily instead.
 
 ## What it produces
 
-- **Projection board** — per-game receiving, rushing and passing yardage with full
-  distributions, plus anytime-touchdown probability and the chance of clearing any
-  yardage line. Reported two ways: *if active*, and *expected* with availability
-  priced in.
-- **Team scouting** — projected 2026 identity against league average, in plain
-  language, with the reasoning shown: whose scheme it came from and how much weight
-  it carries.
-- **Signature concepts** — the calls each team runs more than the league does, with
-  what they produced. The 2025 Rams ran under-center play-action deep shots off
-  motion at 2.8× league rate for 15.3 yards a play; Miami's shotgun jet-motion
-  outside zone ran at 4.5×.
-- **Matchup** — where one team's offensive structure meets the other's defensive
-  habits.
-- **Game predictions** — independent margin, total and win probability per game
-  from opponent-adjusted EPA ratings, shown next to the market line. It beats the
+The app is deliberately shallow at the front. Three tabs answer the three
+questions most visits are about; everything else is one click deeper.
+
+- **📊 Players** — pick a position and a statistic and get every player at once,
+  ranked, as a chart and a table: projection, floor, ceiling, the chance of
+  clearing the round number people actually talk about, and touchdown
+  probability. No clicking through a roster to compare two receivers. One player
+  can be expanded underneath for the shape of his distribution.
+- **🎯 Picks** — the model's highest-confidence sides, and separately its
+  **longshots**: lines a player clears only when the game goes his way. Both
+  carry an expected-value calculator once you enter a real price.
+- **🎰 Parlay** — press Generate. Legs are priced against one shared simulation,
+  so correlation is carried rather than assumed away: same-team stacks come out
+  15–25% likelier than a naive calculator says, and cross-game legs correctly
+  show no lift. Press it again for a different slip, or build one by hand.
+- **🏈 Games** — independent margin, total and win probability per game from
+  opponent-adjusted EPA ratings, shown next to the market line. It beats the
   naive baselines and loses to the closing line; see below.
-- **Players** — every projected player by position group, with distributions,
-  percentiles and a full line sheet.
-- **Best picks** — the model's highest-confidence sides across a week, with an
-  expected-value calculator once you enter a price.
-- **Parlay builder** — legs priced against one shared simulation, so correlation
-  is carried rather than assumed away. Same-team stacks come out 15–25% likelier
-  than a naive calculator says; cross-game legs correctly show no lift.
-- **War room** — the weekly coordinator view: where two schemes collide, which
-  players the matchup swings, and what changed since last week (depth-chart moves,
-  injury report, snap-share trend, your own notes).
-- **Coverage** — man/zone rates and coverage shells per defence, how each offence
-  fares against each structure, route menus and personnel groupings, from nflverse
-  participation charting.
-- **Situational context** — wind, venue and divisional status feed both the game
-  and player models; travel and body clock are shown but not applied, because
-  they no longer predict anything (see below).
-- **Scheme explorer** — all 32 projected fingerprints in one sortable table.
+- **🔍 Deep dive** — the coordinator-level tools behind one selector: the full
+  team projection board, the war room (scheme collisions, X-factors, what changed
+  this week), team scouting reports with signature concepts, coverage charting,
+  head-to-head matchups, and all 32 scheme fingerprints in one sortable table.
+- **📖 Learn** — every term in plain English, an honest account of how accurate
+  the model is, and the full method write-up.
 
 ## Coaching changes are configuration, not code
 

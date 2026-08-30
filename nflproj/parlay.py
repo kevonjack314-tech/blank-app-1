@@ -55,6 +55,14 @@ def evaluate(legs: list[Leg], games: list, conditional: bool = True) -> dict:
     # Resolve every leg first, then condition once on all named players being
     # active. Conditioning leg by leg would trim each to a different length and
     # silently break the alignment that makes the joint reading correct.
+    seen = set()
+    for leg in legs:
+        key = (leg.player, leg.stat, leg.line, leg.side)
+        if key in seen:
+            return {"error": f"the same selection is in the slip twice: "
+                             f"{leg.describe()}"}
+        seen.add(key)
+
     resolved, missing = [], []
     for leg in legs:
         game = _find_game(games, leg.player)
@@ -147,10 +155,17 @@ def correlation_matrix(legs: list[Leg], games: list) -> pd.DataFrame:
         if m is None:
             continue
         cols.append(m.astype(float))
-        names.append(leg.describe())
+        # Two identical legs describe identically, and a frame with repeated
+        # labels cannot be rendered. Number the repeats rather than dropping
+        # them: the caller asked about these legs, duplicates included.
+        name = leg.describe()
+        if name in names:
+            name = f"{name} ({names.count(name) + 1})"
+        names.append(name)
     if len(cols) < 2:
         return pd.DataFrame()
-    return pd.DataFrame(np.corrcoef(np.vstack(cols)), index=names, columns=names)
+    corr = np.corrcoef(np.vstack(cols))
+    return pd.DataFrame(np.atleast_2d(corr), index=names, columns=names)
 
 
 def suggest(games: list, n_legs: int = 2, min_leg_prob: float = 0.55,
@@ -222,6 +237,8 @@ def suggest(games: list, n_legs: int = 2, min_leg_prob: float = 0.55,
             continue
         rows.append({
             "legs": "  +  ".join(c["leg"].describe() for c in combo),
+            "leg_objects": [c["leg"] for c in combo],
+            "leg_detail": res["legs"],
             "matchups": ", ".join(sorted({c["matchup"] for c in combo})),
             "team": ", ".join(sorted(teams)),
             "probability": res["probability"],
@@ -241,3 +258,45 @@ def suggest(games: list, n_legs: int = 2, min_leg_prob: float = 0.55,
     else:
         df = df.sort_values("probability", ascending=False)
     return df.head(top_n).reset_index(drop=True)
+
+
+# Presets for the one-press generator, as leg-probability bands. A parlay is a
+# worse bet than its legs at every setting; what changes is how the payout and
+# the hit rate trade off against each other.
+STYLES = {
+    "Safer": {"min_leg_prob": 0.62, "max_leg_prob": 0.88},
+    "Balanced": {"min_leg_prob": 0.52, "max_leg_prob": 0.80},
+    "Longshot": {"min_leg_prob": 0.25, "max_leg_prob": 0.58},
+}
+
+
+def generate(games: list, n_legs: int = 3, style: str = "Balanced",
+             correlated: bool = True, teams: list[str] | None = None,
+             seed: int | None = None) -> dict:
+    """One parlay, ready to show. The button behind the button.
+
+    Returns the best slip ``suggest`` can find at this size and style, already
+    evaluated, or a message saying why it could not find one. ``seed`` picks a
+    different slip from the same ranked shortlist so pressing generate again
+    gives something new rather than the same answer.
+    """
+    band = STYLES.get(style, STYLES["Balanced"])
+    df = suggest(games, n_legs=n_legs,
+                 target="correlated" if correlated else "independent",
+                 top_n=12, **band)
+    if df.empty:
+        return {"error": f"No {n_legs}-leg {style.lower()} parlay available this week. "
+                         "Try fewer legs or a different style."}
+    if teams:
+        keep = df[df["team"].apply(lambda t: any(x in t.split(", ") for x in teams))]
+        if keep.empty:
+            return {"error": "No parlay found for that team. Clear the filter or "
+                             "try a different style."}
+        df = keep.reset_index(drop=True)
+    row = df.iloc[int(seed) % len(df)] if seed is not None else df.iloc[0]
+    return {
+        "legs": pd.DataFrame(row["leg_detail"]),
+        "leg_objects": row["leg_objects"],
+        "summary": row.drop(labels=["leg_detail", "leg_objects"]).to_dict(),
+        "alternatives": df.drop(columns=["leg_detail", "leg_objects"]),
+    }
