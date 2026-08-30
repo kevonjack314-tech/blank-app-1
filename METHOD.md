@@ -78,6 +78,28 @@ so a team's identity converges on what it is actually doing by around midseason.
 Weeks are filtered strictly below the target week, so a projection never sees
 its own game.
 
+### Does it help
+
+`scripts/backtest.py --inseason` runs the same 2025 holdout with the model
+rebuilt before each week. Over 5,671 skill-player games:
+
+| | preseason build | in-season build |
+| --- | --- | --- |
+| Targets correlation | 0.604 | **0.626** |
+| Carries correlation | 0.819 | **0.834** |
+| Receiving yards correlation | 0.532 | **0.563** |
+| Rushing yards correlation | 0.748 | **0.759** |
+| Scrimmage yards correlation | 0.583 | **0.605** |
+| Scrimmage yards MAE | 21.16 | **20.51** |
+| Scrimmage yards bias | +0.42 | **−0.17** |
+| Anytime TD over/under-forecast | −0.014 | **−0.008** |
+
+Every measure improves, and the bias is close to eliminated. The gains are real
+but not enormous, which is the honest reading: usage is the largest term in any
+projection and prior-season usage was already carrying most of it. What in-season
+updating adds on top is a sharper opponent term and a faster response to role
+change.
+
 ## Which games count as evidence
 
 **Preseason is excluded unconditionally**, and that is not configurable.

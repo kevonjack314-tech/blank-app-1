@@ -103,12 +103,17 @@ season's baseline. Fix a line, rerun, and the projections change.
 
 | | bias | correlation |
 | --- | --- | --- |
-| Targets | +0.04 | 0.54 |
-| Carries | +0.22 | 0.72 |
-| Receiving yards | +0.26 | 0.50 |
-| Rushing yards | +0.98 | 0.67 |
-| Scrimmage yards | +1.24 | 0.54 |
-| Anytime TD | +1.6 pts | — |
+| Targets | −0.14 | 0.63 |
+| Carries | +0.18 | 0.83 |
+| Receiving yards | −0.91 | 0.56 |
+| Rushing yards | +0.74 | 0.76 |
+| Scrimmage yards | −0.17 | 0.61 |
+| Anytime TD | −0.8 pts | — |
+
+Those are the in-season figures (`--inseason`). Projected from prior seasons
+alone, the same holdout gives scrimmage-yards correlation 0.583 and MAE 21.16
+against 0.605 and 20.51 — every measure improves once the model rebuilds from
+games already played.
 
 The backtest is what forced the availability model: projecting every listed player
 as if he dresses every week overstated volume by 25–40%, because 46% of projected
