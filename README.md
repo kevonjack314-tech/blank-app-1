@@ -94,17 +94,23 @@ season's baseline. Fix a line, rerun, and the projections change.
 
 | | bias | correlation |
 | --- | --- | --- |
-| Targets | −0.14 | 0.63 |
-| Carries | +0.18 | 0.83 |
-| Receiving yards | −0.91 | 0.56 |
-| Rushing yards | +0.74 | 0.76 |
-| Scrimmage yards | −0.17 | 0.61 |
+| Targets | +0.03 | 0.63 |
+| Carries | −0.00 | 0.83 |
+| Receiving yards | +0.57 | 0.57 |
+| Rushing yards | −0.07 | 0.75 |
+| Scrimmage yards | +0.50 | 0.61 |
+| Passing yards | −15.2 | 0.17 |
 | Anytime TD | −0.8 pts | — |
 
 Those are the in-season figures (`--inseason`). Projected from prior seasons
-alone, the same holdout gives scrimmage-yards correlation 0.583 and MAE 21.16
-against 0.605 and 20.51 — every measure improves once the model rebuilds from
-games already played.
+alone, the same holdout gives scrimmage-yards correlation 0.584 and MAE 21.18
+against 0.605 and 20.59 — the model gets better once it can rebuild from games
+already played, which is most of the reason in-season mode exists.
+
+Passing yards are the weak column and are reported deliberately. Preseason they
+manage only +0.07, which merely matches the trivial baseline of a passer's own
+prior yards per game (+0.18); in-season they reach +0.17 with lower error than
+that baseline. It is the one market where the app declines to offer longshots.
 
 The backtest is what forced the availability model: projecting every listed player
 as if he dresses every week overstated volume by 25–40%, because 46% of projected

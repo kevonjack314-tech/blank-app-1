@@ -211,7 +211,9 @@ targets 0.604 → 0.614, receiving yards 0.533 → 0.546.
 
 That is honest progress and not a solved problem. **+0.07 still only matches the
 trivial baseline**, which is why the app does not offer longshot props on
-quarterback passing yards.
+quarterback passing yards. In-season, rebuilt from games already played, the
+same measure reaches +0.169 with 59.8 yards of error — past the baseline on
+error, still short of where a passing projection ought to be.
 
 Team passing efficiency is carried the same way defensive quality is — regressed
 by its own measured persistence rather than followed to a coordinator's next job
