@@ -8,7 +8,9 @@ resulting projections are compared against what actually happened.
 """
 from __future__ import annotations
 
+import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -71,17 +73,47 @@ def actuals_2025() -> pd.DataFrame:
     return a
 
 
-def run(weeks=range(1, 19), n_sims=4000) -> pd.DataFrame:
+def run(weeks=range(1, 19), n_sims=4000, inseason: bool = False) -> pd.DataFrame:
+    """Project the held-out season week by week.
+
+    With ``inseason`` the model is rebuilt before each week from the games
+    already played that year - usage, team form and defensive quality all
+    refresh. Weeks are filtered strictly below the target, so a projection never
+    sees its own game. Without it the whole season is projected from 2022-2024
+    alone, which is what the model does before a season starts.
+    """
     ctx = build_holdout_context()
-    pm = pipeline.project_team_schemes(ctx, anchor_season=2024)
-    usage_hist = um.player_usage(ctx.plays)
+    static_pm = pipeline.project_team_schemes(ctx, anchor_season=2024)
+    static_usage = um.player_usage(ctx.plays)
     sampler = pj.TouchSampler(ctx.plays)
     league_def = schemes.league_means(ctx.fingerprints, "defense", 2024)
+
+    # Current-season play, loaded once and sliced per week.
+    test_plays = None
+    if inseason:
+        test_raw = data.play_by_play([TEST], columns=schemes.PBP_COLUMNS)
+        test_plays = schemes.prepare_plays(test_raw, data.charting([TEST]))
+        print(f"in-season mode: {len(test_plays)} plays available from {TEST}")
     act = actuals_2025()
     sched = board.schedule_for(ctx.games, TEST)
 
     rows = []
     for wk in weeks:
+        pm, usage_hist = static_pm, static_usage
+        if inseason and test_plays is not None and wk > 1:
+            played = test_plays[test_plays["week"] < wk]
+            if not played.empty:
+                combined = pd.concat([ctx.plays, played], ignore_index=True)
+                wk_ctx = replace(ctx, plays=combined, current_season=TEST,
+                                 through_week=int(wk),
+                                 fingerprints=schemes.build_fingerprints(combined))
+                pm = pipeline.project_team_schemes(wk_ctx, anchor_season=2024)
+                usage_hist = um.player_usage(combined)
+                ctx_for_week = wk_ctx
+            else:
+                ctx_for_week = ctx
+        else:
+            ctx_for_week = ctx
         # Use the depth chart as it stood going into this week. Reusing an
         # end-of-season chart credits late-emerging players with a role they
         # did not yet have, which is hindsight leaking into the test.
@@ -97,7 +129,7 @@ def run(weeks=range(1, 19), n_sims=4000) -> pd.DataFrame:
             gid[r["home_team"]] = r["game_id"]
             gid[r["away_team"]] = r["game_id"]
         for team, gc in gcs.items():
-            res = board.project_team(team, ctx, pm, usage_hist, sampler, gc,
+            res = board.project_team(team, ctx_for_week, pm, usage_hist, sampler, gc,
                                      league_def, n_sims=n_sims, seed=int(wk) * 100,
                                      env=wk_envs.get(team), chart=wk_chart)
             for r in res:
@@ -160,6 +192,14 @@ def report(m: pd.DataFrame) -> None:
 
 
 if __name__ == "__main__":
-    m = run()
-    m.to_parquet("data/cache/backtest_2025.parquet")
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--inseason", action="store_true",
+                    help="rebuild the model each week from games already played")
+    ap.add_argument("--sims", type=int, default=4000)
+    args = ap.parse_args()
+
+    m = run(n_sims=args.sims, inseason=args.inseason)
+    suffix = "_inseason" if args.inseason else ""
+    m.to_parquet(f"data/cache/backtest_2025{suffix}.parquet")
+    print(f"\n{'IN-SEASON' if args.inseason else 'PRESEASON'} MODE")
     report(m)

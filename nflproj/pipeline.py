@@ -44,14 +44,39 @@ class Context:
     protection: dict = None
     practice: dict = None
     kickers: pd.DataFrame = None
+    current_season: int = None
+    through_week: int = None
 
 
 def build_context(seasons=HISTORY_SEASONS, projection_season=PROJECTION_SEASON,
-                  use_cache: bool = True) -> Context:
-    cache = CACHE / f"plays_{min(seasons)}_{max(seasons)}.parquet"
-    fp_cache = CACHE / f"fingerprints_{min(seasons)}_{max(seasons)}.parquet"
+                  use_cache: bool = True, through_week: int | None = None) -> Context:
+    """Load everything the model needs.
+
+    ``through_week`` switches the model into in-season mode: play-by-play from
+    the projection season up to (but not including) that week is loaded and
+    folded into usage, team form and defensive quality. Out of season, or before
+    the feed exists, it is ignored and the model runs on prior seasons alone.
+    """
+    tag = f"{min(seasons)}_{max(seasons)}" + (f"_w{through_week}" if through_week else "")
+    cache = CACHE / f"plays_{tag}.parquet"
+    fp_cache = CACHE / f"fingerprints_{tag}.parquet"
 
     raw = data.play_by_play(seasons, columns=schemes.PBP_COLUMNS)
+
+    # Current-season play, when the season is under way. Weeks are filtered
+    # strictly below the target so a projection never sees its own game.
+    current = None
+    if through_week and through_week > 1:
+        try:
+            cur = data.play_by_play([projection_season], columns=schemes.PBP_COLUMNS)
+            cur = cur[cur["week"] < int(through_week)]
+            if not cur.empty:
+                current = cur
+                raw = pd.concat([raw, cur], ignore_index=True)
+                log.info("in-season mode: %d plays from %s weeks 1-%d",
+                         len(cur), projection_season, through_week - 1)
+        except Exception as exc:
+            log.info("no current-season play-by-play yet (%s)", exc)
     if use_cache and cache.exists() and fp_cache.exists():
         plays = pd.read_parquet(cache)
         fp = pd.read_parquet(fp_cache)
@@ -78,6 +103,8 @@ def build_context(seasons=HISTORY_SEASONS, projection_season=PROJECTION_SEASON,
         sep = agg.dropna().to_dict()
     ctx = Context(
         plays=plays,
+        current_season=projection_season if current is not None else None,
+        through_week=through_week if current is not None else None,
         fingerprints=fp,
         depth=depth,
         chart=personnel.latest_depth_chart(depth),
@@ -134,7 +161,11 @@ def project_team_schemes(ctx: Context, anchor_season: int | None = None) -> dict
     earlier year cannot accidentally read the season they are predicting.
     """
     if anchor_season is None:
-        anchor_season = int(ctx.fingerprints["season"].max())
+        # In season, this year's own play is the anchor; the projected
+        # fingerprint is then blended against it by how much has been seen.
+        completed = [s for s in ctx.fingerprints["season"].unique()
+                     if ctx.current_season is None or s < ctx.current_season]
+        anchor_season = int(max(completed)) if completed else int(ctx.fingerprints["season"].max())
     lg_off = schemes.league_means(ctx.fingerprints, "offense", anchor_season)
     lg_def = schemes.league_means(ctx.fingerprints, "defense", anchor_season)
 
@@ -157,7 +188,55 @@ def project_team_schemes(ctx: Context, anchor_season: int | None = None) -> dict
         dfn["base_front"] = front["base_front"].iloc[0] if len(front) else None
 
         out[team] = {"offense": off, "defense": dfn, "staff": staff}
+
+    if ctx.current_season is not None:
+        out = _blend_current_form(out, ctx)
     return out
+
+
+# How fast this season's own play displaces the preseason projection. Team-level
+# form settles faster than an individual's usage: a defence's EPA allowed in the
+# first half of a season predicts its second half at r = 0.32, against r = 0.11
+# across seasons, so within-season evidence is roughly three times as
+# informative and is weighted accordingly.
+TEAM_FORM_K = 220.0        # plays before this season carries half the weight
+
+
+def _blend_current_form(projections: dict, ctx: Context) -> dict:
+    """Fold this season's play into the projected team fingerprints.
+
+    Preseason, defensive quality barely carries year to year, so opponent
+    adjustment is necessarily faint. Once games exist that changes: this is what
+    makes matchup analysis bite during the season rather than merely preseason.
+    """
+    cur = ctx.plays[ctx.plays["season"] == ctx.current_season]
+    if cur.empty:
+        return projections
+
+    fp_now = schemes.build_fingerprints(cur)
+    if fp_now.empty:
+        return projections
+
+    for side in ("offense", "defense"):
+        now = fp_now[fp_now["side"] == side].set_index("team")
+        for team, entry in projections.items():
+            if team not in now.index:
+                continue
+            row = now.loc[team]
+            n = float(row.get("plays", 0) or 0)
+            if n <= 0:
+                continue
+            w = n / (n + TEAM_FORM_K)
+            projected = entry[side]["projected"]
+            blended = projected.copy()
+            for trait in projected.index:
+                v = row.get(trait, np.nan)
+                if np.isfinite(v):
+                    blended[trait] = (1 - w) * float(projected[trait]) + w * float(v)
+            entry[side]["projected"] = blended
+            entry[side]["current_form_weight"] = w
+            entry[side]["current_plays"] = n
+    return projections
 
 
 def scheme_table(projections: dict[str, dict], side: str = "offense") -> pd.DataFrame:

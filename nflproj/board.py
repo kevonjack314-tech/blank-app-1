@@ -117,6 +117,7 @@ def project_team(
                 current_team=team, qb_shared_targets=shared, qb_continuity=continuity,
                 env=env, rush_efficiency=rush_eff, separation=sep,
                 draft=getattr(ctx, "draft", None),
+                current_season=getattr(ctx, "current_season", None),
             ))
 
     _rebalance(results, volume)

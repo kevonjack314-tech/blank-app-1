@@ -143,6 +143,22 @@ That last row is why rushing is split into blocking and back rather than
 projected as one yards-per-carry number: the line persists, broken tackles do
 not.
 
+## In-season updating
+
+Before Week 1 the model runs on prior seasons and the depth chart. Once games are
+played it rebuilds from them, and the app switches automatically.
+
+How fast this season displaces last was measured, not guessed: the best weight on
+season-to-date is `n / (n + K)` with K = 8 for targets and 4 for carries — so a
+target share is 79% current by 30 targets, and a backfield settles faster still.
+
+The bigger effect is at team level. A defence barely carries across seasons
+(EPA allowed r = 0.11) but predicts its own second half from its first at
+r = 0.32. Preseason, opponent multipliers span just 0.988–1.011; rebuilt through
+week 12 they span **0.905–1.102**. Matchup adjustment goes from nearly inert to a
+real term, which is also what makes X-factors and the war room bite once the
+season starts.
+
 ## Narratives: tested, not assumed
 
 Familiar football narratives were tested against closing lines back to 2006 —

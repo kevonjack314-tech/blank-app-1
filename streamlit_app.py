@@ -50,8 +50,8 @@ def _first_run_sync() -> None:
 
 
 @st.cache_resource(show_spinner="Loading play-by-play, charting and depth charts…")
-def load():
-    ctx = pipeline.build_context()
+def load(through_week: int | None = None):
+    ctx = pipeline.build_context(through_week=through_week)
     pm = pipeline.project_team_schemes(ctx)
     usage_hist = um.player_usage(ctx.plays)
     sampler = pj.TouchSampler(ctx.plays)
@@ -70,8 +70,36 @@ def load():
 
 _first_run_sync()
 
+# In-season mode. Once the season is under way, rebuilding from games already
+# played is worth far more than any single modelling refinement: usage settles,
+# and defensive quality goes from barely knowable (r = 0.11 across seasons) to
+# genuinely informative (r = 0.32 within one).
+_avail = ndata.fetch("pbp", PROJECTION_SEASON)
+_played = int(_avail["week"].max()) if _avail is not None and len(_avail) else 0
+with st.sidebar:
+    st.markdown("### Model state")
+    if _played:
+        _live = st.toggle("In-season mode", value=True,
+                          help=f"Rebuild from {PROJECTION_SEASON} games already played "
+                               "rather than projecting from prior seasons alone.")
+        _wk = st.number_input("Project as of week", 2, 18, min(_played + 1, 18),
+                              disabled=not _live)
+        _through = int(_wk) if _live else None
+        st.caption(f"{PROJECTION_SEASON} play-by-play available through week {_played}.")
+    else:
+        _through = None
+        st.caption(
+            f"No {PROJECTION_SEASON} play-by-play published yet, so the model is "
+            "running preseason: everything comes from prior seasons and the current "
+            "depth charts. In-season mode switches on automatically once games are "
+            "played."
+        )
+
 (ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings,
- team_proj, scoring, cov_plays, cov_fp) = load()
+ team_proj, scoring, cov_plays, cov_fp) = load(_through)
+
+if ctx.current_season:
+    st.sidebar.success(f"In-season: built through week {ctx.through_week - 1}")
 
 st.title("🏈 NFL Projection Model")
 st.caption(

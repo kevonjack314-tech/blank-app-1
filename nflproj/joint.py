@@ -248,11 +248,14 @@ def _allocate_team(out: JointGame, team: str, b: dict, ctx, projections_map: dic
         if pos in ("WR", "TE", "RB") and cont < 1.0:
             pulls["target"] = min(pulls["target"] + 0.22 * (1.0 - cont), 0.70)
         ts_, _ = usage_mod.project_share(usage_hist, pid, pos, rank, "target",
-                                         current_team=team, role_pull=pulls["target"])
+                                         current_team=team, role_pull=pulls["target"],
+                                         current_season=getattr(ctx, "current_season", None))
         cs_, _ = usage_mod.project_share(usage_hist, pid, pos, rank, "carry",
-                                         current_team=team, role_pull=pulls["carry"])
+                                         current_team=team, role_pull=pulls["carry"],
+                                         current_season=getattr(ctx, "current_season", None))
         gs_, _ = usage_mod.project_share(usage_hist, pid, pos, rank, "goalline",
-                                         current_team=team, role_pull=pulls["goalline"])
+                                         current_team=team, role_pull=pulls["goalline"],
+                                         current_season=getattr(ctx, "current_season", None))
         skill.append({"id": pid, "name": row["player_name"], "pos": pos, "rank": rank})
         tgt_base.append(ts_); car_base.append(cs_); gl_base.append(gs_)
 

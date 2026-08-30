@@ -358,6 +358,7 @@ def project_skill_player(
     qb_continuity: float = 1.0, env: dict | None = None,
     rush_efficiency: dict | None = None, separation: float | None = None,
     draft: pd.DataFrame | None = None, protection: float | None = None,
+    current_season: int | None = None,
 ) -> PlayerProjection:
     """Simulate a non-quarterback's receiving and rushing line for one game."""
     rng = rng or np.random.default_rng()
@@ -373,13 +374,16 @@ def project_skill_player(
 
     tgt_share, tgt_ev = usage_mod.project_share(
         usage_hist, player_id, position, depth_rank, "target",
-        current_team=current_team, role_pull=pulls["target"])
+        current_team=current_team, role_pull=pulls["target"],
+        current_season=current_season)
     car_share, car_ev = usage_mod.project_share(
         usage_hist, player_id, position, depth_rank, "carry",
-        current_team=current_team, role_pull=pulls["carry"])
+        current_team=current_team, role_pull=pulls["carry"],
+        current_season=current_season)
     gl_share, _ = usage_mod.project_share(
         usage_hist, player_id, position, depth_rank, "goalline",
-        current_team=current_team, role_pull=pulls["goalline"])
+        current_team=current_team, role_pull=pulls["goalline"],
+        current_season=current_season)
 
     # A player with no NFL sample falls back entirely to his role prior. Draft
     # capital is the one additional signal available for him, and it fades to
@@ -401,7 +405,8 @@ def project_skill_player(
     exp_targets = volume["team_targets"] * tgt_share
     ays_share, _ = usage_mod.project_share(
         usage_hist, player_id, position, depth_rank, "air_yards",
-        current_team=current_team, role_pull=pulls["target"])
+        current_team=current_team, role_pull=pulls["target"],
+        current_season=current_season)
 
     hist = usage_hist[usage_hist["player_id"] == player_id] if player_id else pd.DataFrame()
     catch_rate = _shrunk(hist, "catch_rate", "targets", 0.645, PRIOR_STRENGTH["rec_efficiency"])

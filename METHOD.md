@@ -34,6 +34,50 @@ Charting is what makes scheme measurable rather than inferred. Without it you
 can see that a team ran the ball; with it you can see that they ran it from
 shotgun, out of jet motion, to the right edge.
 
+## In-season updating
+
+Before a season starts the model has only prior years and a depth chart. Once
+games exist, what a team and a player are doing *now* is better evidence, and
+the blend was measured rather than assumed.
+
+Predicting each player's week-N share from his season-to-date share and his
+prior-season share over 2022–2025, the best weight on the current season is
+`n / (n + K)`, where n is the touches accumulated so far:
+
+| | K | after 5 touches | after 30 | after 100 |
+| --- | --- | --- | --- | --- |
+| Target share | 8 | 0.38 | 0.79 | 0.93 |
+| Carry share | 4 | 0.56 | 0.88 | 0.96 |
+
+Carries settle faster because a backfield resolves more quickly than a target
+tree. Blending beats either source alone, and for carries the margin is wide —
+a root-mean-square error of 0.145 against 0.189 for prior-season-only, a 23%
+improvement — because backfields change hands completely between years.
+
+Expressed by week, that puts the weight on season-to-date at roughly 0.39 by
+week 4, 0.60 by week 8, 0.79 by week 13 and 0.92 by week 18, which is what the
+same data shows directly.
+
+### Team form matters more than any single refinement
+
+The larger effect is at team level, and it is the thing that makes matchup
+analysis work at all. Across seasons a defence barely carries: EPA allowed
+predicts the following year at r = 0.11. *Within* a season it predicts the
+second half from the first at **r = 0.32**, roughly three times as informative.
+
+The consequence is stark. Preseason, the opponent multipliers the model applies
+to player projections span 0.988 to 1.011 — a 2.3% spread, because before a snap
+there is genuinely little basis for saying one defence will suppress a receiver
+more than another. Rebuilt in-season through week 12, the same multipliers span
+**0.905 to 1.102**, a 19.7% spread. Matchup adjustment goes from nearly inert to
+a real term.
+
+Team fingerprints are blended on the same principle, at `n / (n + 220)` plays,
+so a team's identity converges on what it is actually doing by around midseason.
+
+Weeks are filtered strictly below the target week, so a projection never sees
+its own game.
+
 ## Which games count as evidence
 
 **Preseason is excluded unconditionally**, and that is not configurable.
@@ -598,6 +642,9 @@ projected separately, regressed by its own measured persistence.
   nothing here identifies a mispriced market on its own.
 - **Cross-sideline and quarterback-versus-back correlations are understated**,
   so those parlays price conservatively.
+- **In-season mode needs the season to exist.** Before Week 1 there is no
+  current-season play-by-play, so the model runs on prior years and the depth
+  chart, and the matchup term is correspondingly faint.
 - **The game model does not beat the market**, and is not built to. It has no
   access to injury reports, weather, or news, and it has no mechanism for the
   in-week information that moves a line.

@@ -834,3 +834,78 @@ def test_boom_thresholds_are_defined_per_position():
     # A quarterback's bar is passing volume, a skill player's is scrimmage yards.
     assert "pass_yards" in gpl.BOOM_THRESHOLDS["QB"]
     assert "scrimmage_yards" in gpl.BOOM_THRESHOLDS["WR"]
+
+
+# ----------------------------------------------------------- in-season mode
+def _season_history(prior_share=0.10, now_share=0.30, n_now=0, prior_n=90):
+    rows = [{"player_id": "P", "season": 2025, "team": "AAA",
+             "target_share": prior_share, "targets": prior_n,
+             "carry_share": 0.0, "carries": 0}]
+    if n_now:
+        rows.append({"player_id": "P", "season": 2026, "team": "AAA",
+                     "target_share": now_share, "targets": n_now,
+                     "carry_share": 0.0, "carries": 0})
+    return pd.DataFrame(rows)
+
+
+def test_current_season_displaces_prior_as_evidence_accumulates():
+    from nflproj import usage as usg
+    shares = []
+    for n in (0, 5, 20, 60, 150):
+        s, _ = usg.project_share(_season_history(n_now=n), "P", "WR", 1, "target",
+                                 current_team="AAA", current_season=2026)
+        shares.append(s)
+    # Monotonically toward this season's 0.30, never past it.
+    assert shares == sorted(shares)
+    assert shares[0] < 0.20 < shares[-1] <= 0.30
+
+
+def test_in_season_blend_matches_the_fitted_weight():
+    """Weight on season-to-date is n/(n+K) with K measured per statistic."""
+    from nflproj import usage as usg
+    K = usg.INSEASON_K["target"]
+    n = 24.0
+    h = _season_history(n_now=int(n))
+    got, _ = usg.project_share(h, "P", "WR", 1, "target",
+                               current_team="AAA", current_season=2026)
+    before, _ = usg.project_share(_season_history(n_now=0), "P", "WR", 1, "target",
+                                  current_team="AAA", current_season=2026)
+    w = n / (n + K)
+    assert got == pytest.approx(w * 0.30 + (1 - w) * before, abs=0.005)
+
+
+def test_carries_settle_faster_than_targets():
+    """A backfield resolves quicker than a target tree; the constants say so."""
+    from nflproj import usage as usg
+    assert usg.INSEASON_K["carry"] < usg.INSEASON_K["target"]
+
+
+def test_out_of_season_path_is_untouched():
+    """Without a current season the model must behave exactly as before."""
+    from nflproj import usage as usg
+    h = _season_history(n_now=40)
+    with_flag, _ = usg.project_share(h, "P", "WR", 1, "target",
+                                     current_team="AAA", current_season=None)
+    # No current_season means 2026 rows are treated as ordinary history, not
+    # as live evidence, so the answer differs from in-season mode.
+    live, _ = usg.project_share(h, "P", "WR", 1, "target",
+                                current_team="AAA", current_season=2026)
+    assert with_flag != pytest.approx(live)
+
+
+def test_a_player_with_no_prior_season_still_projects():
+    from nflproj import usage as usg
+    only_now = pd.DataFrame([{"player_id": "R", "season": 2026, "team": "AAA",
+                              "target_share": 0.22, "targets": 30}])
+    s, ev = usg.project_share(only_now, "R", "WR", 2, "target",
+                              current_team="AAA", current_season=2026)
+    assert 0 < s < 0.35 and ev > 0
+
+
+def test_team_form_weight_grows_with_plays():
+    from nflproj import pipeline as pl
+    K = pl.TEAM_FORM_K
+    for n in (100, 400, 900):
+        w = n / (n + K)
+        assert 0 < w < 1
+    assert 100 / (100 + K) < 900 / (900 + K)
