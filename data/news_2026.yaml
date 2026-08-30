@@ -1,0 +1,40 @@
+# Player and team news
+# ---------------------------------------------------------------------------
+# Hand-entered information the data has not caught up with yet. This is where
+# beat reporting belongs: first-team reps, a coordinator saying he intends to
+# feature someone, a snap-count plan on return from injury.
+#
+# What does NOT belong here: narratives everybody already knows. Those were
+# tested against closing lines back to 2006 - revenge games, divisional
+# rematches, bye weeks, short weeks, primetime, letdown spots, National Tight
+# Ends Day - and none of them move outcomes. A widely known story is already in
+# the price. Only information that has not propagated is worth encoding.
+#
+# Fields:
+#   player     : name as it appears on the depth chart
+#   gsis_id    : optional, and more reliable than the name
+#   team       : team abbreviation
+#   effect     : usage_up | usage_down | out | questionable | role_change |
+#                workload_cap
+#   magnitude  : 0-0.6, how large the usage effect is (ignored for out)
+#   note       : what you actually read, in your own words
+#   source     : where it came from, so it can be re-checked
+#   expires    : YYYY-MM-DD, or omit to keep it live indefinitely
+#
+# Usage effects are capped at 1.6x and 0.4x combined. A note is a nudge from
+# information, not a way to hand-write a projection.
+
+notes: []
+
+# Worked example, kept commented so the file starts clean:
+#
+# notes:
+#   - player: Cam Skattebo
+#     team: NYG
+#     effect: usage_up
+#     magnitude: 0.20
+#     note: >
+#       Beat reporting has him taking every first-team rep through the week
+#       while Tracy is limited. Depth chart has not moved yet.
+#     source: beat writer, 2026-09-05
+#     expires: 2026-09-15

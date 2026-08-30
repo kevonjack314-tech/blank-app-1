@@ -705,3 +705,87 @@ def test_shared_shocks_are_configured_to_be_nonzero():
     assert jt.SCORING_SHOCK_SD > 0
     assert jt.MARGIN_SHOCK_SD > 0
     assert jt.SHOOTOUT_PLAYS > 0
+
+
+# ------------------------------------------------------- opponent adjustment
+def test_defence_quality_is_projected_not_dropped():
+    """Without these columns every opponent silently evaluates as average."""
+    from nflproj import schemes as sch
+    assert sch.DEFENSE_QUALITY, "no defensive quality traits declared"
+    # Quality must not be mistaken for identity: it does not follow a coach.
+    assert not (set(sch.DEFENSE_QUALITY) & set(sch.DEFENSE_IDENTITY))
+    for trait, persistence in sch.DEFENSE_QUALITY_PERSISTENCE.items():
+        assert 0.0 < persistence < 0.5, f"{trait} persistence looks wrong"
+
+
+def test_defence_adjustment_separates_opponents():
+    """A good and a bad defence must not produce the same multiplier."""
+    league = pd.Series({"ypa_allowed": 6.4, "ypc_allowed": 4.3,
+                        "points_per_drive_allowed": 2.0})
+    good = pd.Series({"ypa_allowed": 5.6, "ypc_allowed": 3.9,
+                      "points_per_drive_allowed": 1.6})
+    bad = pd.Series({"ypa_allowed": 7.2, "ypc_allowed": 4.8,
+                     "points_per_drive_allowed": 2.5})
+    a = pj.defense_adjustment(good, league)
+    b = pj.defense_adjustment(bad, league)
+    assert a["pass_yards"] < 1.0 < b["pass_yards"]
+    assert a["rush_yards"] < b["rush_yards"]
+
+
+def test_missing_quality_columns_fall_back_to_neutral():
+    league = pd.Series({"ypa_allowed": 6.4})
+    assert pj.defense_adjustment(pd.Series(dtype=float), league)["pass_yards"] == 1.0
+    assert pj.defense_adjustment(None, None)["pass_yards"] == 1.0
+
+
+# ------------------------------------------------------------------- news
+def test_notes_cap_how_far_they_can_move_a_projection():
+    from nflproj import news as nw
+    notes = pd.DataFrame([
+        {"player": "X", "effect": "usage_up", "magnitude": 0.9},
+        {"player": "X", "effect": "usage_up", "magnitude": 0.9},
+    ])
+    assert nw.usage_multiplier(notes, None, "X") <= nw.MAX_USAGE_MULTIPLIER
+    down = pd.DataFrame([{"player": "X", "effect": "usage_down", "magnitude": 0.9}])
+    assert nw.usage_multiplier(down, None, "X") >= nw.MIN_USAGE_MULTIPLIER
+
+
+def test_note_matching_is_case_insensitive_and_scoped():
+    from nflproj import news as nw
+    notes = pd.DataFrame([{"player": "Malik Nabers", "effect": "usage_up",
+                           "magnitude": 0.2}])
+    assert nw.usage_multiplier(notes, None, "malik nabers") > 1.0
+    assert nw.usage_multiplier(notes, None, "Someone Else") == 1.0
+
+
+def test_out_note_overrides_availability():
+    from nflproj import news as nw
+    out = pd.DataFrame([{"player": "X", "effect": "out"}])
+    q = pd.DataFrame([{"player": "X", "effect": "questionable"}])
+    assert nw.availability_override(out, None, "X") == 0.0
+    assert 0 < nw.availability_override(q, None, "X") < 1
+    assert nw.availability_override(pd.DataFrame(), None, "X") is None
+
+
+def test_expired_notes_are_dropped(tmp_path):
+    from nflproj import news as nw
+    import yaml as _yaml
+    from datetime import date
+    p = tmp_path / "n.yaml"
+    p.write_text(_yaml.safe_dump({"notes": [
+        {"player": "Old", "effect": "usage_up", "magnitude": 0.2, "expires": "2020-01-01"},
+        {"player": "Live", "effect": "usage_up", "magnitude": 0.2, "expires": "2099-01-01"},
+    ]}))
+    loaded = nw.load_notes(p, as_of=date(2026, 9, 1))
+    assert list(loaded["player"]) == ["Live"]
+
+
+def test_unknown_effects_are_ignored(tmp_path):
+    from nflproj import news as nw
+    import yaml as _yaml
+    p = tmp_path / "n.yaml"
+    p.write_text(_yaml.safe_dump({"notes": [
+        {"player": "A", "effect": "hot_hand", "magnitude": 0.5},
+        {"player": "B", "effect": "usage_up", "magnitude": 0.1},
+    ]}))
+    assert list(nw.load_notes(p)["player"]) == ["B"]

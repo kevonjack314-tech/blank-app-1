@@ -460,6 +460,94 @@ handed a backup running back a 79.5-yard rushing line and then ranked the under
 at 90% — confidence manufactured by an absurd line rather than by knowing
 anything. Markets below a per-statistic floor are not offered at all.
 
+## Narratives, and which ones survive contact with the data
+
+Football narratives divide into two kinds that behave completely differently, and
+the distinction decides whether they belong in a model.
+
+### Known narratives are already in the price
+
+Tested against closing lines back to 2006, none of the familiar stories move
+outcomes:
+
+| Narrative | n | Effect vs the spread | t |
+| --- | --- | --- | --- |
+| Road team on a short week | 303 | +0.17 | 0.22 |
+| Home team off a bye | 266 | −0.01 | −0.01 |
+| Road team off a bye | 280 | −1.02 | −1.28 |
+| Standalone / primetime | 777 | −0.30 | −0.60 |
+| Divisional rematch | 960 | +0.20 | 0.42 |
+| Revenge (host lost the first meeting) | 507 | −0.20 | −0.24 |
+| Team off a 17+ point win | 603 | +0.21 | 0.37 |
+| Team off a 17+ point loss | 703 | +0.13 | 0.25 |
+
+**National Tight Ends Day** is the cleanest test of the idea, because it is a
+real league-promoted event that plausibly changes play-calling — the fourth
+Sunday in October, league-wide since 2019. If any narrative should show up in
+production rather than merely in prices, it is this one:
+
+| | TE target share | TE share of receiving TDs |
+| --- | --- | --- |
+| National Tight Ends Day | 0.2179 | 0.2612 |
+| Other October Sundays | 0.2186 | 0.2628 |
+| Every other game | 0.2173 | 0.2513 |
+
+The gap against every other game is +0.0006 in target share (t = 0.11) and
++0.0099 in touchdown share (t = 0.36) — both well inside noise, and other October
+Sundays actually run slightly *higher* than the holiday itself, so what little
+elevation exists is seasonal rather than ceremonial. With 268 touchdowns on those
+dates, an effect would have to be larger than about five percentage points to be
+detected, so a small real effect could still hide. What can be said is that it is
+not large.
+
+This is not an argument that narratives do not matter to football. It is an
+argument that narratives *everybody already knows* are priced, and that a model
+adding them is double-counting.
+
+### Information is a different thing entirely
+
+What is not priced is news that has not propagated: a back taking first-team
+reps, a coordinator saying he intends to feature someone, a snap-count plan on
+return from injury, a practice-squad elevation. That is where attention pays, and
+`nflproj/news.py` tracks it two ways — notes entered by hand in
+`data/news_2026.yaml`, and role changes the model detects itself by watching
+depth charts, injury reports and snap share move week to week. Snap share is the
+most useful of those, because it moves before target share does.
+
+Notes are capped at 1.6x and 0.4x on usage. A note is a nudge from information,
+not a way to hand-write a projection.
+
+## Game planning
+
+`nflproj/gameplan.py` is the weekly coordinator view.
+
+**Scheme collisions** put one team's offensive identity against the other's
+defensive habits on the axes where they actually interact — motion against man
+coverage, play-action against a four-man rush, perimeter runs against light
+boxes, deep shots against a single-high shell, tempo against substitution. Each
+read is generated from measured rates on both sides rather than written in
+advance.
+
+**X-factors** are computed rather than nominated: each player is projected twice,
+once against this opponent and once against a league-average defence, and ranked
+by the gap. That finds the player whose week actually swings on this matchup
+rather than the player who is simply good.
+
+The preseason spread here is deliberately narrow. Defensive quality barely
+carries year to year — yards allowed at r ≈ 0.11, explosive plays allowed at 0.29
+— so before a snap is played there is little basis for saying one defence will
+suppress a receiver more than another. In-season, with current-year form, the
+same machinery separates opponents much more sharply.
+
+### A bug this exposed
+
+Building the X-factor view surfaced a real defect: every opponent was evaluating
+as exactly league average, because the projected defensive fingerprint carried
+only *structural* traits (blitz rate, box counts) and none of the quality columns
+the matchup adjustment reads. Opponent adjustment had therefore been silently
+inert for every player projection in the model. Defensive quality is now
+projected separately, regressed by its own measured persistence.
+
 ## What this does not do
 
 - **The coaching registry is research, not a feed.** It was assembled from
@@ -485,6 +573,11 @@ anything. Markets below a per-statistic floor are not offered at all.
   were real historically and are not any more.
 - **No true rivalry variable**, only divisional status.
 - **Weather must be entered by hand** for future games; it is not forecast.
+- **Narratives are not modelled**, deliberately — the familiar ones are priced,
+  and the model tracks information instead.
+- **News must be entered by hand.** There is no wire feed; the app has no
+  outbound network access at runtime. What it does automate is detecting role
+  changes from depth charts, injury reports and snap trends.
 - **No odds feed.** Prices must be typed in for expected value to mean anything;
   nothing here identifies a mispriced market on its own.
 - **Cross-sideline and quarterback-versus-back correlations are understated**,

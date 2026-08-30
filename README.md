@@ -78,6 +78,9 @@ waiting. Comment out that line in the `Dockerfile` to fetch lazily instead.
 - **Parlay builder** — legs priced against one shared simulation, so correlation
   is carried rather than assumed away. Same-team stacks come out 15–25% likelier
   than a naive calculator says; cross-game legs correctly show no lift.
+- **War room** — the weekly coordinator view: where two schemes collide, which
+  players the matchup swings, and what changed since last week (depth-chart moves,
+  injury report, snap-share trend, your own notes).
 - **Coverage** — man/zone rates and coverage shells per defence, how each offence
   fares against each structure, route menus and personnel groupings, from nflverse
   participation charting.
@@ -140,6 +143,24 @@ That last row is why rushing is split into blocking and back rather than
 projected as one yards-per-carry number: the line persists, broken tackles do
 not.
 
+## Narratives: tested, not assumed
+
+Familiar football narratives were tested against closing lines back to 2006 —
+revenge games, divisional rematches, byes, short weeks, primetime, letdown spots.
+None move outcomes. **National Tight Ends Day**, a real league-promoted event,
+shows a tight end target share of 0.2179 against 0.2173 on every other day
+(t = 0.11); other October Sundays run slightly higher than the holiday itself.
+
+That is not a claim that narratives don't matter to football. It is that
+narratives *everyone already knows* are in the price, so a model adding them
+double-counts.
+
+What is not priced is information that has not propagated yet — first-team reps,
+a coordinator's stated intent, a snap-count plan. `data/news_2026.yaml` is where
+that goes, and the model also detects role changes on its own from depth charts,
+injury reports and snap-share trends. Snap share is the most useful signal there,
+because it moves before target share does.
+
 ## Parlays are priced on correlation, not independence
 
 Multiplying leg probabilities assumes they are independent. Same-game legs never
@@ -196,6 +217,8 @@ nflproj/
   kicking.py       field goal and extra point projections
   gamemodel.py     team ratings, margin/total/win probability
   joint.py         correlated whole-game simulation
+  gameplan.py      scheme collisions and X-factor players
+  news.py          hand-entered notes and detected role changes
   picks.py         player line sheets, best picks, odds arithmetic
   parlay.py        correlated parlay pricing
   venues.py        stadium geography, climate, travel and environment

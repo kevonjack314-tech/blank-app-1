@@ -8,9 +8,9 @@ import streamlit as st
 import altair as alt
 
 from nflproj import (board, coverage as cvg, data as ndata, gamemodel as gm,
-                     joint as jnt, kicking as kk, parlay as play, picks,
-                     pipeline, playbook, projections as pj, report, schemes,
-                     usage as um, venues as V)
+                     gameplan as gp, joint as jnt, kicking as kk, news,
+                     parlay as play, picks, pipeline, playbook,
+                     projections as pj, report, schemes, usage as um, venues as V)
 
 # Single categorical hue; the distribution is one series, so no legend is
 # needed and the probability is stated directly rather than read off shading.
@@ -79,9 +79,9 @@ st.caption(
     "scheme carried across coaching changes, constrained by personnel"
 )
 
-(tab_board, tab_players, tab_picks, tab_parlay, tab_games, tab_scout,
+(tab_board, tab_players, tab_picks, tab_parlay, tab_war, tab_games, tab_scout,
  tab_coverage, tab_matchup, tab_scheme, tab_method) = st.tabs(
-    ["Projection board", "Players", "Best picks", "Parlay builder",
+    ["Projection board", "Players", "Best picks", "Parlay builder", "War room",
      "Game predictions", "Team scouting", "Coverage", "Matchup",
      "Scheme explorer", "Method & limits"]
 )
@@ -534,6 +534,130 @@ with tab_parlay:
                     "there are no prices here. A parlay is a worse bet than its legs "
                     "however the correlation falls."
                 )
+
+# --------------------------------------------------------------- war room
+with tab_war:
+    st.caption(
+        "The weekly coordinator view: where two schemes actually collide, which "
+        "players the matchup swings, and what has changed since last week."
+    )
+    ww = sorted(board.schedule_for(ctx.games, PROJECTION_SEASON)["week"].unique())
+    w1, w2 = st.columns([1, 3])
+    w_week = w1.selectbox("Week", ww, index=0, key="wr_week")
+    w_sched = board.schedule_for(ctx.games, PROJECTION_SEASON, int(w_week))
+    if w_sched.empty:
+        st.info("No games scheduled.")
+    else:
+        labels = {f"{r.away_team} @ {r.home_team}": (r.away_team, r.home_team)
+                  for r in w_sched.itertuples()}
+        pick_g = w2.selectbox("Game", list(labels), key="wr_game")
+        away, home = labels[pick_g]
+
+        plan = gp.weekly_plan(home, away, ctx, pm, cov_plays, lg_off, lg_def,
+                              seasons=(anchor,))
+        st.subheader("Scheme collisions")
+        for side in ("away_offense", "home_offense"):
+            sd = plan[side]
+            st.markdown(f"**{TEAM_NAMES[sd['offense']]} offense vs "
+                        f"{TEAM_NAMES[sd['defense']]} defense**")
+            any_note = False
+            for c in sd["collisions"]:
+                who = {"neutral": "even", "variance": "high variance"}.get(
+                    c["favours"], c["favours"])
+                st.markdown(f"- **{c['axis']}** — {c['edge']}  ·  _favours {who}_  \n"
+                            f"  {c['detail']}")
+                any_note = True
+            for n in sd["coverage"]:
+                st.markdown(f"- **Coverage** — {n}")
+                any_note = True
+            if not any_note:
+                st.caption("Both sides near league norms on every axis measured.")
+
+        st.subheader("X-factors")
+        st.caption(
+            "Not the best players — the ones whose projection moves most against "
+            "*this* opponent, measured by re-projecting them against a "
+            "league-average defence. Preseason the spread is narrow, because "
+            "defensive quality barely carries year to year (r ≈ 0.11–0.29); "
+            "in-season, with current form, it widens considerably."
+        )
+        gcs_w = board.game_contexts(ctx.games, PROJECTION_SEASON, int(w_week))
+        envs_w = board.game_environments(ctx.games, PROJECTION_SEASON, int(w_week))
+        xa, xb = st.columns(2)
+        for col, team in ((xa, away), (xb, home)):
+            with col:
+                st.markdown(f"**{team}**")
+                if team not in gcs_w:
+                    st.caption("On bye.")
+                    continue
+                xf = gp.x_factors(team, gcs_w[team].opponent, ctx, pm, usage_hist,
+                                  sampler, gcs_w[team], lg_def,
+                                  env=envs_w.get(team), n_sims=6000, top_n=5)
+                if xf.empty:
+                    st.caption("No meaningful swing.")
+                else:
+                    st.dataframe(xf[["player", "pos", "projection",
+                                     "vs_average_defense", "matchup_swing",
+                                     "swing_pct"]].rename(columns={
+                        "player": "Player", "pos": "Pos", "projection": "Proj",
+                        "vs_average_defense": "vs avg D",
+                        "matchup_swing": "Swing", "swing_pct": "Swing %"}).round(2),
+                        hide_index=True, use_container_width=True)
+
+        st.subheader("Situational edges")
+        se = gp.situational_edges(away, home, ctx.plays, seasons=(anchor,))
+        if not se.empty:
+            st.dataframe(se.round(3), hide_index=True, use_container_width=True)
+
+        st.divider()
+        st.subheader("What changed this week")
+        st.caption(
+            "Role changes the model can see for itself. Known narratives — revenge "
+            "games, bye weeks, primetime, National Tight Ends Day — were tested "
+            "against closing lines back to 2006 and none of them move outcomes. "
+            "Information that has not propagated yet is a different matter, and "
+            "that is what this watches."
+        )
+        brief = news.briefing(PROJECTION_SEASON, int(w_week), ctx)
+        n1, n2 = st.columns(2)
+        with n1:
+            st.markdown("**Depth-chart moves**")
+            dm = brief["depth_moves"]
+            if dm is not None and not dm.empty:
+                st.dataframe(dm[["team", "player_name", "pos_abb", "pos_rank_before",
+                                 "pos_rank_after", "direction"]].head(20).rename(columns={
+                    "team": "Team", "player_name": "Player", "pos_abb": "Pos",
+                    "pos_rank_before": "Was", "pos_rank_after": "Now",
+                    "direction": "Move"}), hide_index=True, use_container_width=True)
+            else:
+                st.caption("No movement detected between these weeks.")
+        with n2:
+            st.markdown("**Injury report**")
+            inj = brief["injuries"]
+            if inj is not None and not inj.empty:
+                st.dataframe(inj.head(20), hide_index=True, use_container_width=True)
+            else:
+                st.caption("No report published for this week yet.")
+
+        st.markdown("**Snap-share trend** — snaps move before targets do")
+        stt = brief["snap_trend"]
+        if stt is not None and not stt.empty:
+            skill = stt[stt["position"].isin(["QB", "RB", "WR", "TE", "FB"])]
+            st.dataframe(skill.head(15).round(3), hide_index=True,
+                         use_container_width=True)
+        else:
+            st.caption("Not enough of the season played to compute a trend.")
+
+        notes_df = brief["notes"]
+        st.markdown("**Your notes**")
+        if notes_df is not None and not notes_df.empty:
+            st.dataframe(notes_df, hide_index=True, use_container_width=True)
+        else:
+            st.caption(
+                "None entered. Add beat reporting to `data/news_2026.yaml` — first-team "
+                "reps, a snap-count plan, a coordinator saying he intends to feature "
+                "someone. Those move projections because they have not propagated yet."
+            )
 
 # ------------------------------------------------------------- game model
 with tab_games:

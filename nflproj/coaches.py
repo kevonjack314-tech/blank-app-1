@@ -26,7 +26,8 @@ import pandas as pd
 import yaml
 
 from .config import DATA, LAST_COMPLETED_SEASON, TEAMS, normalize_team
-from .schemes import DEFENSE_IDENTITY, OFFENSE_IDENTITY
+from .schemes import (DEFENSE_IDENTITY, DEFENSE_QUALITY_PERSISTENCE,
+                      OFFENSE_IDENTITY)
 
 log = logging.getLogger(__name__)
 
@@ -224,6 +225,9 @@ def project_fingerprint(
     # Anything still missing falls back to the league mean.
     projected = projected.fillna(league_vec)
 
+    if side == "defense":
+        projected = _add_defense_quality(projected, base, league, anchor_season)
+
     return {
         "team": team,
         "side": side,
@@ -236,3 +240,26 @@ def project_fingerprint(
         "is_new": is_new,
         "confidence": staff.confidence,
     }
+
+
+def _add_defense_quality(projected: pd.Series, base: pd.Series | None,
+                         league: pd.Series, anchor_season: int) -> pd.Series:
+    """Attach how good a defence is, alongside how it is built.
+
+    Quality is a result, not an identity, so it does not follow a coordinator.
+    Each trait is pulled toward the league mean by its own measured persistence -
+    yards allowed carry at about r = 0.11, explosive plays allowed at 0.29 - so
+    the surviving spread is deliberately narrow. Narrow is not zero: without
+    these columns the matchup adjustment finds nothing to read and treats every
+    opponent as average.
+    """
+    out = projected.copy()
+    for trait, persistence in DEFENSE_QUALITY_PERSISTENCE.items():
+        lg = league.get(trait, np.nan)
+        if not np.isfinite(lg):
+            continue
+        prior = float(lg)
+        observed = float(base.get(trait, np.nan)) if base is not None else np.nan
+        out[trait] = prior if not np.isfinite(observed) else \
+            prior + (observed - prior) * float(persistence)
+    return out

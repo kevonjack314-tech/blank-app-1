@@ -359,3 +359,25 @@ DEFENSE_IDENTITY = [
     "blitz_rate", "heavy_blitz_rate", "avg_pass_rushers", "avg_box",
     "light_box_rate", "heavy_box_rate",
 ]
+
+# How good a defence is, as opposed to how it is built. These are results
+# rather than identity, so they do not travel with a coordinator - they are
+# regressed toward the league mean by their own measured year-over-year
+# persistence and carried separately.
+#
+# They must be projected: the matchup adjustment reads these columns, and while
+# they were absent every opponent silently evaluated as exactly league average,
+# which disabled opponent adjustment for every player projection in the model.
+DEFENSE_QUALITY_PERSISTENCE = {
+    "ypa_allowed": 0.109,
+    "ypc_allowed": 0.126,
+    "points_per_drive_allowed": 0.198,
+    "explosive_allowed": 0.287,
+    "epa_allowed": 0.113,
+    "success_allowed": 0.258,
+    "pass_epa_allowed": 0.113,
+    "rush_epa_allowed": 0.126,
+    "sack_rate": 0.130,
+    "rz_td_allowed": 0.169,
+}
+DEFENSE_QUALITY = list(DEFENSE_QUALITY_PERSISTENCE)
