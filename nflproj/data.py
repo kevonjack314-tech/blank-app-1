@@ -28,6 +28,7 @@ ASSETS = {
     "pfr_pass": ("pfr_advstats/advstats_week_pass_{season}.parquet", "pfr_pass_{season}.parquet"),
     "pfr_rush": ("pfr_advstats/advstats_week_rush_{season}.parquet", "pfr_rush_{season}.parquet"),
     "pfr_rec": ("pfr_advstats/advstats_week_rec_{season}.parquet", "pfr_rec_{season}.parquet"),
+    "pfr_def": ("pfr_advstats/advstats_week_def_{season}.parquet", "pfr_def_{season}.parquet"),
     "participation": ("pbp_participation/pbp_participation_{season}.parquet", "part_{season}.parquet"),
 }
 STATIC_ASSETS = {
@@ -283,9 +284,38 @@ def draft_picks() -> pd.DataFrame:
     return df
 
 
+DEF_COVERAGE_COLUMNS = {
+    "def_targets": "targets", "def_completions_allowed": "completions",
+    "def_yards_allowed": "yards", "def_yards_after_catch": "yac",
+    "def_receiving_td_allowed": "td", "def_ints": "ints", "def_adot": "adot",
+    "def_tackles_combined": "tackles", "def_missed_tackles": "missed",
+    "pfr_player_name": "player", "pfr_player_id": "player_id",
+}
+
+
+def defensive_coverage(seasons=HISTORY_SEASONS) -> pd.DataFrame:
+    """Per-defender coverage charting: targets, yards and tackles allowed.
+
+    Renamed to short column names on the way through, because the raw feed
+    prefixes everything with ``def_`` and the module that consumes it is
+    already about defenders.
+    """
+    d = pfr_advanced("def", seasons)
+    if d.empty:
+        return d
+    keep = {k: v for k, v in DEF_COVERAGE_COLUMNS.items() if k in d.columns}
+    out = d[["season", "week", "team", "opponent"] + list(keep)].rename(columns=keep)
+    for c in ("targets", "completions", "yards", "yac", "td", "ints", "adot",
+              "tackles", "missed"):
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+    return out
+
+
 def pfr_advanced(kind: str, seasons=HISTORY_SEASONS) -> pd.DataFrame:
     """Pro Football Reference advanced splits: pressure, contact, drops."""
-    asset = {"pass": "pfr_pass", "rush": "pfr_rush", "rec": "pfr_rec"}[kind]
+    asset = {"pass": "pfr_pass", "rush": "pfr_rush", "rec": "pfr_rec",
+             "def": "pfr_def"}[kind]
     frames = []
     for s in seasons:
         df = fetch(asset, s)

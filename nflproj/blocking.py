@@ -127,6 +127,77 @@ def project_rushing_efficiency(
     }
 
 
+# Offensive line positions as snap counts label them.
+OL_POSITIONS = {"T", "G", "C", "OL", "OT", "OG"}
+# A lineman needs this many snaps in a season to count as having been a starter.
+STARTER_SNAPS = 200
+
+# Line continuity is measured and reported and deliberately not applied.
+#
+# Over 223 team-seasons from 2019-2025, counting how many of a team's five
+# highest-snap linemen also started for it the previous year, the sign is right
+# and the size is not there:
+#
+#   sack rate    -0.00165 per returning starter (t = -1.54)
+#   rush EPA     +0.00098                        (t = +0.23)
+#   yards/carry  -0.00636                        (t = -0.24)
+#
+# Added to a model that already has the team's own prior sack rate, continuity
+# lifts the multiple correlation from 0.376 to 0.388. The whole range - one
+# returning starter against five - is worth about two thirds of a percentage
+# point of sack rate, and that is inside the noise. Rushing shows nothing at
+# all, which is the more surprising half: continuity is usually argued for on
+# run blocking.
+#
+# This is "not established" rather than "established zero", so the measure is
+# kept and surfaced. If a later season pushes it past significance, applying it
+# is a one-line change.
+CONTINUITY_SACK_RATE_COEF = -0.00165
+CONTINUITY_SACK_RATE_T = -1.54
+CONTINUITY_APPLIED = False
+
+
+def line_continuity(snaps: pd.DataFrame) -> pd.DataFrame:
+    """How much of each offensive line is back from last season.
+
+    Two measures, because they disagree about what continuity means: the share
+    of line snaps taken by players who were starters here last year, and the
+    plain count of returning starters among this year's top five. The count is
+    the one the football conversation uses.
+    """
+    if snaps is None or snaps.empty or "position" not in snaps.columns:
+        return pd.DataFrame()
+    ol = snaps[snaps["position"].isin(OL_POSITIONS)]
+    if ol.empty:
+        return pd.DataFrame()
+    key = "pfr_player_id" if "pfr_player_id" in ol.columns else "player"
+    ts = (ol.groupby(["season", "team", key])["offense_snaps"].sum()
+            .rename("snaps").reset_index())
+
+    prior = ts.copy()
+    prior["season"] += 1
+    prior = prior.rename(columns={"snaps": "prior_snaps"})
+    j = ts.merge(prior, on=["season", "team", key], how="left")
+    j["prior_snaps"] = j["prior_snaps"].fillna(0.0)
+
+    j["returning_snaps"] = np.where(j["prior_snaps"] >= STARTER_SNAPS, j["snaps"], 0.0)
+    share = (j.groupby(["season", "team"])
+               .agg(line_snaps=("snaps", "sum"),
+                    returning_snaps=("returning_snaps", "sum")).reset_index())
+    share["snap_continuity"] = share["returning_snaps"] / share["line_snaps"].clip(lower=1)
+
+    j["rank"] = j.groupby(["season", "team"])["snaps"].rank(ascending=False, method="first")
+    five = j[j["rank"] <= 5]
+    count = (five.assign(back=(five["prior_snaps"] >= STARTER_SNAPS).astype(int))
+                 .groupby(["season", "team"])["back"].sum()
+                 .rename("returning_starters").reset_index())
+
+    out = share.merge(count, on=["season", "team"], how="left")
+    out["returning_starters"] = out["returning_starters"].fillna(0).astype(int)
+    return out[["season", "team", "line_snaps", "snap_continuity",
+                "returning_starters"]].sort_values(["season", "team"]).reset_index(drop=True)
+
+
 def team_pass_protection(pfr_pass: pd.DataFrame) -> pd.DataFrame:
     """Pressure allowed per dropback, by team-season - a protection signal."""
     if pfr_pass is None or pfr_pass.empty:

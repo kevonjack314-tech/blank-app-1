@@ -16,7 +16,8 @@ import streamlit as st
 import altair as alt
 
 from nflproj import (board, coverage as cvg, data as ndata, gamemodel as gm,
-                     gameplan as gp, joint as jnt, kicking as kk, leaderboard as lb,
+                     defenders as dfn, gameplan as gp, joint as jnt, kicking as kk,
+                     leaderboard as lb, routes as rt,
                      lotto, news, parlay as play, picks, pipeline, playbook,
                      projections as pj, report, schemes, usage as um, venues as V)
 
@@ -160,6 +161,12 @@ WEEK = int(_wsel)
 (tab_players, tab_picks, tab_parlay, tab_games, tab_deep, tab_learn) = st.tabs(
     ["📊 Players", "🎯 Picks", "🎰 Parlay", "🏈 Games", "🔍 Deep dive", "📖 Learn"]
 )
+
+
+@st.cache_resource(show_spinner="Attaching charted routes…")
+def _routed_plays():
+    """Charted route on each target, canonicalised across seasons."""
+    return rt.attach_routes(ctx.plays, ctx.participation)
 
 
 @st.cache_resource(show_spinner="Measuring explosive rates…")
@@ -1142,11 +1149,138 @@ def _deep_scheme_explorer():
 
 # ------------------------------------------------------------------- method
 
+def _deep_defenders_routes():
+    """Who a defense asks to cover, and the concepts an offense calls.
+
+    Both layers are description. The measurements that kept them out of the
+    projection are stated on screen rather than buried, because a reader
+    looking at a cornerback's yards-allowed will reasonably assume it is being
+    used, and it is not.
+    """
+    st.info(
+        "**Neither of these adjusts a projection, and the reason is measured.** "
+        "Individual coverage quality does not survive removing coverage role: "
+        "completion rate allowed persists at r = 0.46 year to year, but at "
+        "**0.09** once the depth-of-target curve is fitted out, and yards per "
+        "target at **0.13**. Within a single season it is the same — 0.09 on "
+        "split halves — so in-season mode cannot rescue it. Route mix is "
+        "genuinely persistent (r = 0.86) but is a near-substitute for depth of "
+        "target, which the model already carries: adding it to a projection of "
+        "next-season yards per target moves the multiple correlation from 0.534 "
+        "to 0.541.\n\n"
+        "What is real and stable here is **role** — how deep a defender is asked "
+        "to work, who quarterbacks throw at, and which concepts an offense "
+        "actually calls. That is worth reading before a game. It is not a "
+        "yardage multiplier.",
+        icon="🧭",
+    )
+    d1, d2 = st.columns(2)
+    dteam = d1.selectbox("Defense", TEAMS, index=TEAMS.index("BUF"),
+                         format_func=lambda t: f"{t} — {TEAM_NAMES[t]}", key="df_team")
+    oteam = d2.selectbox("Offense", TEAMS, index=TEAMS.index("NYG"),
+                         format_func=lambda t: f"{t} — {TEAM_NAMES[t]}", key="rt_team")
+
+    st.markdown(f"#### {TEAM_NAMES[dteam]} coverage")
+    prof = getattr(ctx, "defenders", None)
+    smap = dfn.secondary_map(prof, dteam) if prof is not None else pd.DataFrame()
+    if smap.empty:
+        st.caption("No charted coverage for this defense in the anchor season.")
+    else:
+        show = smap.rename(columns={
+            "player": "Defender", "role": "Role", "adot": "Target depth",
+            "targets": "Targets", "targets_per_game": "Tgt/game",
+            "coverage_share": "Share of coverage", "completion_pct": "Comp % allowed",
+            "yards_per_target": "Yds/target", "yac_per_completion": "YAC/catch",
+            "missed_tackle_pct": "Missed tackle %"})
+        for c in ("Share of coverage", "Comp % allowed", "Missed tackle %"):
+            if c in show:
+                show[c] = show[c] * 100
+        st.dataframe(show.round(1), hide_index=True, width="stretch")
+        load = dfn.coverage_load(prof, dteam)
+        if load:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Most targeted", load["most_targeted"])
+            c2.metric("His share", f"{load['concentration'] * 100:.0f}%")
+            c3.metric("Avg target depth", f"{load['mean_adot_allowed']:.1f} yds")
+            c4.metric("Deep coverage share", f"{load['deep_share'] * 100:.0f}%")
+
+    st.markdown(f"#### {TEAM_NAMES[oteam]} concept menu")
+    routed = _routed_plays()
+    menu = rt.team_route_menu(routed, oteam, seasons=(anchor,)) if not routed.empty \
+        else pd.DataFrame()
+    if menu.empty:
+        st.caption("No charted routes for this offense in the anchor season.")
+    else:
+        m = menu.rename(columns={
+            "route": "Concept", "targets": "Targets", "share": "Share",
+            "league_share": "League share", "vs_league": "vs league",
+            "yards_per_target": "Yds/target", "epa": "EPA", "adot": "Depth"})
+        m["Share"] = m["Share"] * 100
+        m["League share"] = m["League share"] * 100
+        st.dataframe(m.round(2), hide_index=True, width="stretch")
+        st.caption("**vs league** is how many times more often than the rest of "
+                   "the league this offense is thrown on that concept.")
+
+    if not routed.empty:
+        st.markdown("#### One receiver's menu")
+        pool = routed[routed["posteam"] == oteam]
+        names = (pool.groupby("receiver_player_id").size().sort_values(ascending=False)
+                 .head(12).index.tolist())
+        lookup = ctx.chart.set_index("gsis_id")["player_name"].to_dict() \
+            if "gsis_id" in ctx.chart.columns else {}
+        labels = {lookup.get(p, p): p for p in names}
+        if labels:
+            who = st.selectbox("Receiver", list(labels), key="rt_player")
+            rp = rt.player_route_profile(routed, labels[who], seasons=None)
+            if rp.empty:
+                st.caption("Too few charted targets for a menu.")
+            else:
+                rr = rp.rename(columns={
+                    "route": "Concept", "targets": "Targets", "share": "Share",
+                    "catch_rate": "Catch %", "adot": "Depth",
+                    "yards_per_target": "Yds/target", "league_ypt": "League",
+                    "vs_league": "vs league", "epa": "EPA"})
+                rr["Share"] = rr["Share"] * 100
+                rr["Catch %"] = rr["Catch %"] * 100
+                st.dataframe(rr.drop(columns=["yards"]).round(2), hide_index=True,
+                             width="stretch")
+                st.caption(
+                    f"Route-implied depth {rt.route_implied_depth(rp):.1f} yards "
+                    "against a measured depth of "
+                    f"{rp['adot'].mul(rp['share']).sum():.1f}. A gap says the "
+                    "offense is using him at a different depth than the concepts "
+                    "alone would suggest."
+                )
+
+    st.markdown("#### Offensive line continuity")
+    lc = getattr(ctx, "line_continuity", None)
+    if lc is None or lc.empty:
+        st.caption("No snap counts loaded.")
+    else:
+        latest = lc[lc["season"] == lc["season"].max()].copy()
+        latest = latest.sort_values("returning_starters", ascending=False)
+        st.dataframe(
+            latest.rename(columns={
+                "season": "Season", "team": "Team", "line_snaps": "Line snaps",
+                "snap_continuity": "Snap continuity",
+                "returning_starters": "Returning starters"}).round(3),
+            hide_index=True, width="stretch")
+        st.caption(
+            "Measured and not applied. Over 223 team-seasons a returning starter "
+            "is worth −0.0017 of sack rate (t = −1.54) and nothing at all on "
+            "rushing — the whole range from one returning starter to five is "
+            "about two thirds of a percentage point of sack rate, inside the "
+            "noise. Kept because the sign is consistent: if it clears "
+            "significance in a later season, applying it is a one-line change."
+        )
+
+
 DEEP_SECTIONS = {
     "Team projection board": _deep_team_board,
     "War room (scheme collisions & X-factors)": _deep_war_room,
     "Team scouting report": _deep_scouting,
     "Coverage charting": _deep_coverage,
+    "Defenders, routes & line continuity": _deep_defenders_routes,
     "Head-to-head matchup": _deep_matchup,
     "Scheme explorer (all 32 teams)": _deep_scheme_explorer,
 }

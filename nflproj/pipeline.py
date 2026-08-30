@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from . import availability, blocking, coaches, data, kicking, personnel, schemes
+from . import defenders as defenders_mod
 from .config import CACHE, HISTORY_SEASONS, LAST_COMPLETED_SEASON, PROJECTION_SEASON, ROOT, TEAMS
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ class Context:
     current_season: int = None
     through_week: int = None
     league_offense: pd.Series = None
+    defenders: pd.DataFrame = None
+    line_continuity: pd.DataFrame = None
 
 
 def build_context(seasons=HISTORY_SEASONS, projection_season=PROJECTION_SEASON,
@@ -112,6 +115,11 @@ def build_context(seasons=HISTORY_SEASONS, projection_season=PROJECTION_SEASON,
         fronts=personnel.base_defensive_front(depth),
         qb_profiles=personnel.qb_profiles(plays),
         league_offense=schemes.league_means(fp, "offense", int(fp["season"].max())),
+        # Descriptive layers. Neither reaches a projection - see the module
+        # docstrings for the measurements that decided that.
+        defenders=defenders_mod.defender_profiles(
+            data.defensive_coverage(seasons), seasons=(LAST_COMPLETED_SEASON,)),
+        line_continuity=blocking.line_continuity(snaps),
         staffs=coaches.load_registry(),
         games=data.games(),
         weekly=data.weekly_stats(seasons),

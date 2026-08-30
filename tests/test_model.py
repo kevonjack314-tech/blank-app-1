@@ -12,7 +12,8 @@ import pandas as pd
 import pytest
 
 from nflproj import availability as av
-from nflproj import coaches, lotto, personnel, playbook, projections as pj, schemes, usage as um
+from nflproj import (blocking, coaches, defenders, lotto, personnel, playbook,
+                     projections as pj, routes, schemes, usage as um)
 
 
 # --------------------------------------------------------------------- rates
@@ -1055,3 +1056,75 @@ def test_a_player_never_appears_twice_on_the_same_market():
     out = pk.best_picks([_Fake()], min_prob=0.30, max_prob=0.95, top_n=20)
     if not out.empty:
         assert not out.duplicated(subset=["player", "stat"]).any()
+
+
+# ------------------------------------------- defenders, routes, line continuity
+def test_no_defender_or_route_term_reaches_a_projection():
+    """Three measurements said no, and the flags are what stop a later change
+    from quietly wiring one in without redoing them."""
+    assert defenders.APPLIED_TO_PROJECTION is False
+    assert routes.APPLIED_TO_PROJECTION is False
+    assert blocking.CONTINUITY_APPLIED is False
+
+
+def test_coverage_skill_persists_far_worse_than_coverage_role():
+    """The finding the defender module exists to record: what looks like a
+    good cornerback is mostly where he lines up."""
+    role = defenders.DEFENDER_PERSISTENCE["adot_allowed"]
+    raw = defenders.DEFENDER_PERSISTENCE["completion_pct_allowed"]
+    skill = defenders.DEFENDER_SKILL_PERSISTENCE["completion_pct_over_expected"]
+    assert role > raw > skill
+    assert skill < 0.15          # noise
+    assert role > 0.6            # role, on the other hand, is very stable
+
+
+def test_route_mix_adds_almost_nothing_over_depth_of_target():
+    assert routes.ROUTE_MIX_PERSISTENCE > 0.8      # highly persistent
+    assert routes.ROUTE_MIX_GAIN_OVER_ADOT < 0.01  # and nearly redundant
+
+
+def test_route_vocabulary_is_made_consistent_across_seasons():
+    """2022 charting used different labels; comparing raw ones would read a
+    taxonomy change as a change in play-calling."""
+    s = pd.Series(["HITCH", "HITCH/CURL", "OUT", "QUICK OUT", "DEEP OUT",
+                   "CROSS", "SHALLOW CROSS/DRAG", "IN", "IN/DIG"])
+    out = routes.canonicalize(s).tolist()
+    assert out[0] == out[1] == "hitch/curl"
+    assert out[2] == out[3] == out[4] == "out"
+    assert out[5] == out[6] == "cross/drag"
+    assert out[7] == out[8] == "in/dig"
+    assert set(routes.CANONICAL_ROUTES.values()) == set(routes.ROUTE_RATES)
+
+
+def test_deep_routes_are_worth_more_per_target_than_short_ones():
+    assert routes.ROUTE_RATES["post"]["ypt"] > routes.ROUTE_RATES["hitch/curl"]["ypt"]
+    assert routes.ROUTE_RATES["screen"]["adot"] < 0
+    assert routes.ROUTE_RATES["go"]["catch"] < routes.ROUTE_RATES["screen"]["catch"]
+
+
+def test_defender_role_bands_split_on_target_depth():
+    assert defenders._role(2.0) == "underneath"
+    assert defenders._role(8.0) == "intermediate"
+    assert defenders._role(15.0) == "deep"
+    assert defenders._role(float("nan")) == "unknown"
+
+
+def test_line_continuity_counts_returning_starters():
+    snaps = pd.DataFrame([
+        # last season: A, B and C were starters for TEAM
+        {"season": 2024, "team": "NYG", "position": "T", "pfr_player_id": "A", "offense_snaps": 900},
+        {"season": 2024, "team": "NYG", "position": "G", "pfr_player_id": "B", "offense_snaps": 800},
+        {"season": 2024, "team": "NYG", "position": "C", "pfr_player_id": "C", "offense_snaps": 700},
+        {"season": 2024, "team": "NYG", "position": "G", "pfr_player_id": "D", "offense_snaps": 50},
+        # this season: A and B are back, D steps up, E and F are new
+        {"season": 2025, "team": "NYG", "position": "T", "pfr_player_id": "A", "offense_snaps": 900},
+        {"season": 2025, "team": "NYG", "position": "G", "pfr_player_id": "B", "offense_snaps": 800},
+        {"season": 2025, "team": "NYG", "position": "C", "pfr_player_id": "D", "offense_snaps": 700},
+        {"season": 2025, "team": "NYG", "position": "G", "pfr_player_id": "E", "offense_snaps": 600},
+        {"season": 2025, "team": "NYG", "position": "T", "pfr_player_id": "F", "offense_snaps": 500},
+    ])
+    out = blocking.line_continuity(snaps)
+    row = out[out["season"] == 2025].iloc[0]
+    # D played 50 snaps last year, below the starter threshold, so he does not count
+    assert row["returning_starters"] == 2
+    assert row["snap_continuity"] == pytest.approx(1700 / 3500)

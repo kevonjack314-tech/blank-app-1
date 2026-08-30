@@ -76,9 +76,26 @@ questions most visits are about; everything else is one click deeper.
 - **🔍 Deep dive** — the coordinator-level tools behind one selector: the full
   team projection board, the war room (scheme collisions, X-factors, what changed
   this week), team scouting reports with signature concepts, coverage charting,
-  head-to-head matchups, and all 32 scheme fingerprints in one sortable table.
+  individual defender coverage roles and offensive concept menus, head-to-head
+  matchups, and all 32 scheme fingerprints in one sortable table.
 - **📖 Learn** — every term in plain English, an honest account of how accurate
   the model is, and the full method write-up.
+
+## What was measured and deliberately left out
+
+Several plausible inputs were built far enough to test and then not applied,
+which is as much a part of the model as what it does use:
+
+| | measurement | verdict |
+| --- | --- | --- |
+| Travel, time zones, body clock | east→west decayed from −2.8 pts (1999–2009) to zero | shown, not applied |
+| Narratives (revenge, byes, primetime, National TE Day) | all null against closing lines back to 2006 | not applied |
+| Individual cornerback coverage | persists at r = 0.09–0.14 once coverage role is removed | descriptive only |
+| Route mix | highly persistent (0.86) but a near-substitute for depth of target: +0.007 | descriptive only |
+| Offensive line continuity | −0.0017 sack rate per returning starter, t = −1.54 | measured, not applied |
+| Wind, roof, divisional status | clearly measured | **applied** |
+
+The full measurements are in `METHOD.md`.
 
 ## Coaching changes are configuration, not code
 

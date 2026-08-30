@@ -625,6 +625,97 @@ the easiest one to double, which is the trap the whole section exists to avoid.
 There are no book prices in this data, so none of this is an edge claim. It is a
 probability, a fair price, and a statement about tail shape.
 
+## Three things that look like signal and are not
+
+Each of these was proposed as a projection input, built far enough to measure,
+and then not applied. The measurements are here because the next person to have
+the same good idea should be able to see what happened rather than redo it.
+
+### Individual cornerback coverage
+
+The idea is a receiver-versus-cornerback adjustment. Pro Football Reference
+charts every defender's targets, completions, yards and yards after catch
+allowed, which looks like exactly the right input. Over 806 consecutive
+defender-seasons from 2018–2025 (40+ targets, 8+ games):
+
+| | raw | with coverage role removed |
+| --- | --- | --- |
+| Depth of target allowed | **0.714** | — |
+| Targets per game | 0.586 | — |
+| Completion % allowed | 0.455 | **0.092** |
+| YAC per completion allowed | 0.364 | **0.144** |
+| Yards per target allowed | 0.169 | **0.127** |
+| Missed tackle % | 0.325 | — |
+
+The left column is role, not skill. A boundary corner sees deep throws and a
+nickel sees shallow ones, and depth of target drives completion rate
+mechanically — the aDOT curve alone explains 41% of the variance in completion
+percentage allowed. Fit it out and what remains, which is the part that would
+mean "this defender covers well", persists at 0.09–0.14.
+
+Two escapes were tried and both closed. Split-half reliability *within* a season
+tells the same story (depth of target 0.675, over-expected completion rate
+0.089), so in-season mode cannot rescue it. And missed tackle rate — the one
+genuine individual skill in the table — fails to predict the thing it should:
+a team's missed tackle rate correlates **−0.07** with its yards after catch
+allowed the following season.
+
+### Route mix
+
+Route charting produces a league table that is everything you would hope for —
+post routes return 12.19 yards per target at +0.527 EPA, screens 5.56 at −0.050
+— and a receiver's own mix is one of the most persistent things about him
+(r = 0.860, against 0.482 for his own yards per target). It is still not new
+information, because the model already carries depth of target, and the two are
+near substitutes. Predicting next-season yards per target over 341 consecutive
+receiver-seasons:
+
+| predictors | multiple r |
+| --- | --- |
+| his own yards per target | 0.482 |
+| + depth of target | 0.534 |
+| + route mix | **0.541** |
+
+Seven thousandths, and the aDOT coefficient collapses from 0.107 to 0.018 once
+route mix enters — they are measuring the same thing, and aDOT is measured on
+every target rather than the charted subset. The obvious refinement, that
+screens and flat routes are short in a way aDOT flattens, adds +0.003 on the
+same design against yards after catch.
+
+One thing did have to be fixed before any of this could be measured: the
+charting vocabulary changed after 2022 (`HITCH` became `HITCH/CURL`, `OUT` split
+into `QUICK OUT` and `DEEP OUT`, `CROSS` became `SHALLOW CROSS/DRAG`). Comparing
+raw labels across seasons reads a taxonomy change as a change in play-calling.
+
+### Offensive line continuity
+
+Over 223 team-seasons from 2019–2025, counting how many of a team's five
+highest-snap linemen also started for it the previous year:
+
+| | per returning starter | t |
+| --- | --- | --- |
+| Sack rate | −0.00165 | −1.54 |
+| Rush EPA | +0.00098 | +0.23 |
+| Yards per carry | −0.00636 | −0.24 |
+
+Added to a model that already has the team's own prior sack rate, continuity
+lifts the multiple correlation from 0.376 to 0.388. The whole range — one
+returning starter against five — is worth about two thirds of a percentage
+point of sack rate, which is inside the noise. Rushing shows nothing at all,
+which is the more surprising half, since continuity is usually argued for on
+run blocking.
+
+This one is "not established" rather than "established zero" — the sign is
+consistent across both ways of measuring it — so the measure is kept and shown.
+If a later season pushes it past significance, applying it is a one-line change.
+
+**What all three are still good for.** Coverage role, target concentration and
+concept menus are stable, and they are the coordinator-level reading the app was
+asked for: who a defense asks to cover and how deep, which concepts an offense
+calls more than the league, where a receiver actually lives. That belongs on
+screen. It is simply not a yardage multiplier, and presenting it as one would be
+inventing precision.
+
 ## Narratives, and which ones survive contact with the data
 
 Football narratives divide into two kinds that behave completely differently, and
