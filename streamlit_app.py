@@ -5,9 +5,17 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import altair as alt
+
 from nflproj import (board, coverage as cvg, data as ndata, gamemodel as gm,
-                     kicking as kk, pipeline, playbook, projections as pj,
-                     report, schemes, usage as um, venues as V)
+                     joint as jnt, kicking as kk, parlay as play, picks,
+                     pipeline, playbook, projections as pj, report, schemes,
+                     usage as um, venues as V)
+
+# Single categorical hue; the distribution is one series, so no legend is
+# needed and the probability is stated directly rather than read off shading.
+SERIES_1 = "#2a78d6"
+INK_MUTED = "#52514e"
 from nflproj.config import PROJECTION_SEASON, TEAM_NAMES, TEAMS
 
 st.set_page_config(page_title="NFL Projection Model", page_icon="🏈", layout="wide")
@@ -71,11 +79,50 @@ st.caption(
     "scheme carried across coaching changes, constrained by personnel"
 )
 
-(tab_board, tab_games, tab_scout, tab_coverage, tab_matchup, tab_scheme,
- tab_method) = st.tabs(
-    ["Projection board", "Game predictions", "Team scouting", "Coverage",
-     "Matchup", "Scheme explorer", "Method & limits"]
+(tab_board, tab_players, tab_picks, tab_parlay, tab_games, tab_scout,
+ tab_coverage, tab_matchup, tab_scheme, tab_method) = st.tabs(
+    ["Projection board", "Players", "Best picks", "Parlay builder",
+     "Game predictions", "Team scouting", "Coverage", "Matchup",
+     "Scheme explorer", "Method & limits"]
 )
+
+
+@st.cache_resource(show_spinner="Simulating the slate…")
+def simulate_week(week: int, n_sims: int = 20000):
+    """Simulate every game in a week jointly, so correlated legs price right."""
+    sched = board.schedule_for(ctx.games, PROJECTION_SEASON, int(week))
+    gcs = board.game_contexts(ctx.games, PROJECTION_SEASON, int(week))
+    envs = board.game_environments(ctx.games, PROJECTION_SEASON, int(week))
+    out = []
+    for i, r in enumerate(sched.itertuples()):
+        try:
+            out.append(jnt.simulate_game(
+                r.home_team, r.away_team, ctx, pm, usage_hist, sampler, gcs,
+                lg_def, envs=envs, n_sims=n_sims, seed=1000 + i))
+        except Exception:
+            continue
+    return out
+
+
+def _distribution_chart(values, line: float, title: str):
+    """Histogram of a simulated stat with the line marked."""
+    d = pd.DataFrame({"value": values})
+    hist = (
+        alt.Chart(d)
+        .mark_bar(color=SERIES_1, cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+        .encode(
+            x=alt.X("value:Q", bin=alt.Bin(maxbins=40), title=title,
+                    axis=alt.Axis(grid=False, labelColor=INK_MUTED, titleColor=INK_MUTED)),
+            y=alt.Y("count()", title="simulations",
+                    axis=alt.Axis(grid=True, labelColor=INK_MUTED, titleColor=INK_MUTED)),
+            tooltip=[alt.Tooltip("count()", title="simulations"),
+                     alt.Tooltip("value:Q", bin=True, title=title)],
+        )
+    )
+    rule = (alt.Chart(pd.DataFrame({"line": [line]}))
+            .mark_rule(color="#0b0b0b", strokeWidth=2, strokeDash=[4, 3])
+            .encode(x="line:Q", tooltip=alt.Tooltip("line:Q", title="line")))
+    return (hist + rule).properties(height=240)
 
 # ---------------------------------------------------------------- projections
 with tab_board:
@@ -219,6 +266,274 @@ with tab_board:
                 column_config={c: st.column_config.NumberColumn(c, format="%.1f%%")
                                for c in pdf.columns if c.startswith("o")},
             )
+
+# ------------------------------------------------------------------ players
+with tab_players:
+    st.caption(
+        "Every projected player, grouped by position. Numbers come from a joint "
+        "simulation of the whole game, so a player's line here is consistent with "
+        "his team-mates' — which is what makes the parlay tab work."
+    )
+    pw = sorted(board.schedule_for(ctx.games, PROJECTION_SEASON)["week"].unique())
+    c1, c2, c3 = st.columns([1, 1.4, 2])
+    p_week = c1.selectbox("Week", pw, index=0, key="pl_week")
+    slate = simulate_week(int(p_week))
+
+    roster = pd.concat([g.roster() for g in slate], ignore_index=True) if slate else pd.DataFrame()
+    if roster.empty:
+        st.info("No games simulated for this week.")
+    else:
+        group = c2.selectbox("Position group", list(picks.POSITION_GROUPS), key="pl_grp")
+        allowed = picks.POSITION_GROUPS[group]
+        pool = roster[roster["position"].isin(allowed)].copy()
+        pool = pool.sort_values(["team", "depth_rank", "player"])
+        labels = {f"{r.player}  ({r.team} {r.position}{int(r.depth_rank)})": r.player
+                  for r in pool.itertuples()}
+        if not labels:
+            st.info("No players at this position this week.")
+        else:
+            chosen = c3.selectbox(f"Player  ·  {len(labels)} available", list(labels),
+                                  key="pl_player")
+            player = labels[chosen]
+            game = next((g for g in slate if player in g.players), None)
+            meta = game.meta[player]
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Team", meta["team"])
+            m2.metric("Matchup", f"{game.away} @ {game.home}")
+            m3.metric("Role", f"{meta['position']}{int(meta['depth_rank'])}")
+            m4.metric("Active %", f"{meta['p_active']*100:.0f}%")
+
+            view = st.radio("View", ["If active", "Expected"], horizontal=True,
+                            key="pl_view",
+                            help="If active assumes he dresses — how a book prices a "
+                                 "prop. Expected prices in the chance he does not.")
+            cond = view == "If active"
+            mask = game.active_mask(player) if cond else None
+
+            st.subheader("Projection")
+            stats = picks.STAT_MENU.get(meta["position"], [])
+            rows = []
+            for stat, label in stats:
+                v = game.stat(player, stat)
+                if v is None:
+                    continue
+                vv = v[mask] if mask is not None else v
+                if len(vv) == 0:
+                    continue
+                rows.append({"Market": label, "Projection": float(np.mean(vv)),
+                             "Median": float(np.median(vv)),
+                             "10th": float(np.percentile(vv, 10)),
+                             "90th": float(np.percentile(vv, 90))})
+            if rows:
+                st.dataframe(pd.DataFrame(rows).round(1), hide_index=True,
+                             use_container_width=True)
+
+            st.subheader("Distribution")
+            d1, d2 = st.columns([2, 1])
+            stat_opts = {lab: st for st, lab in stats
+                         if game.stat(player, st) is not None}
+            pick_stat = d1.selectbox("Statistic", list(stat_opts), key="pl_stat")
+            stat_key = stat_opts[pick_stat]
+            vals = game.stat(player, stat_key)
+            vals = vals[mask] if mask is not None else vals
+            default_line = float(np.round(np.median(vals) * 2) / 2)
+            line = d2.number_input("Line", value=default_line, step=0.5, key="pl_line")
+            p_over = float((vals > line).mean())
+            st.altair_chart(_distribution_chart(vals, line, pick_stat),
+                            use_container_width=True)
+            o1, o2, o3 = st.columns(3)
+            o1.metric(f"Over {line:g}", f"{p_over*100:.1f}%")
+            o2.metric(f"Under {line:g}", f"{(1-p_over)*100:.1f}%")
+            o3.metric("Fair price (over)", f"{picks.probability_to_american(p_over):+.0f}")
+
+            st.subheader("All lines")
+            pl = picks.player_lines(game, player, conditional=cond)
+            if not pl.empty:
+                show = pl[["market", "line", "projection", "p_over", "p_under",
+                           "fair_over", "fair_under"]].rename(columns={
+                    "market": "Market", "line": "Line", "projection": "Projection",
+                    "p_over": "Over %", "p_under": "Under %",
+                    "fair_over": "Fair over", "fair_under": "Fair under"})
+                show["Over %"] *= 100; show["Under %"] *= 100
+                st.dataframe(show.round(1), hide_index=True, use_container_width=True)
+            else:
+                st.caption("No lines in a plausible range for this player.")
+
+# --------------------------------------------------------------- best picks
+with tab_picks:
+    st.caption(
+        "The model's highest-confidence sides across a week, from the same joint "
+        "simulation. Enter a price on any row to turn confidence into expected value."
+    )
+    st.warning(
+        "**Confidence is not value.** There is no odds feed here, so this ranks what "
+        "the model is most sure of — not what a book has mispriced. A 90% leg at "
+        "-1200 is still a bad bet. The only number worth acting on is the expected "
+        "value you get after entering a real price.",
+        icon="⚠️",
+    )
+    k1, k2, k3, k4 = st.columns(4)
+    k_week = k1.selectbox("Week", pw, index=0, key="bp_week")
+    lo, hi = k2.slider("Probability band", 0.50, 0.98, (0.60, 0.90), 0.01, key="bp_band")
+    min_act = k3.slider("Min active %", 0.0, 1.0, 0.70, 0.05, key="bp_act")
+    top_n = k4.slider("Show", 10, 80, 30, 5, key="bp_n")
+
+    bp_slate = simulate_week(int(k_week))
+    bp = picks.best_picks(bp_slate, min_prob=lo, max_prob=hi,
+                          min_active=min_act, top_n=int(top_n))
+    if bp.empty:
+        st.info("Nothing in that band. Widen the probability range.")
+    else:
+        show = bp.rename(columns={
+            "matchup": "Game", "player": "Player", "team": "Team", "pos": "Pos",
+            "market": "Market", "line": "Line", "side": "Side",
+            "projection": "Projection", "probability": "Model %",
+            "fair_odds": "Fair odds", "p_active": "Active %"})
+        show["Model %"] *= 100; show["Active %"] *= 100
+        st.dataframe(show.drop(columns=["edge_score", "stat"]).round(1),
+                     hide_index=True, use_container_width=True)
+
+        st.subheader("Price a pick")
+        pc1, pc2, pc3 = st.columns([3, 1, 1])
+        idx = pc1.selectbox("Row", range(len(bp)),
+                            format_func=lambda i: f"{bp.iloc[i].player} {bp.iloc[i].side} "
+                                                  f"{bp.iloc[i].line:g} {bp.iloc[i].market}",
+                            key="bp_row")
+        offered = pc2.number_input("Odds (American)", value=-110, step=5, key="bp_odds")
+        stake = pc3.number_input("Stake", value=100, step=10, key="bp_stake")
+        row = bp.iloc[int(idx)]
+        p = float(row["probability"])
+        ev = picks.expected_value(p, offered, stake)
+        kel = picks.kelly_fraction(p, offered)
+        e1, e2, e3, e4 = st.columns(4)
+        e1.metric("Model probability", f"{p*100:.1f}%")
+        e2.metric("Break-even", f"{picks.american_to_probability(offered)*100:.1f}%")
+        e3.metric("Expected value", f"{ev:+.2f}", delta=f"on {stake:.0f}")
+        e4.metric("Kelly", f"{kel*100:.1f}%" if kel > 0 else "no bet")
+        if ev <= 0:
+            st.caption("Negative expected value at this price — the model does not "
+                       "like it enough to overcome the vig.")
+
+# ------------------------------------------------------------ parlay builder
+with tab_parlay:
+    st.caption(
+        "Legs are priced against one shared simulation of the game, so correlation "
+        "is carried rather than assumed away."
+    )
+    st.info(
+        "**Why this differs from a parlay calculator.** Multiplying leg probabilities "
+        "assumes independence. Same-game legs are never independent: a quarterback "
+        "over his passing yards and his receiver over his receiving yards are nearly "
+        "the same bet, and the naive number is too low. A quarterback and his own "
+        "running back pull against each other, and the naive number is too high. "
+        "Both figures are shown below.",
+        icon="🔗",
+    )
+    pr_week = st.selectbox("Week", pw, index=0, key="pr_week")
+    pr_slate = simulate_week(int(pr_week))
+    pr_roster = pd.concat([g.roster() for g in pr_slate], ignore_index=True) if pr_slate else pd.DataFrame()
+
+    if pr_roster.empty:
+        st.info("No games simulated for this week.")
+    else:
+        st.subheader("Build a slip")
+        n_legs = st.number_input("Legs", 2, 6, 2, key="pr_n")
+        legs, ok = [], True
+        for i in range(int(n_legs)):
+            c1, c2, c3, c4, c5 = st.columns([2.4, 1.8, 1, 1, 1])
+            pool = pr_roster.sort_values(["team", "position", "depth_rank"])
+            names = {f"{r.player} ({r.team} {r.position})": r.player for r in pool.itertuples()}
+            who = c1.selectbox(f"Leg {i+1} player", list(names), key=f"pr_p{i}",
+                               index=min(i, len(names) - 1))
+            pl_name = names[who]
+            gm_ = next((g for g in pr_slate if pl_name in g.players), None)
+            pos = gm_.meta[pl_name]["position"]
+            opts = {lab: stt for stt, lab in picks.STAT_MENU.get(pos, [])
+                    if gm_.stat(pl_name, stt) is not None}
+            if not opts:
+                ok = False
+                continue
+            mkt = c2.selectbox("Market", list(opts), key=f"pr_m{i}")
+            stt = opts[mkt]
+            vals = gm_.stat(pl_name, stt)[gm_.active_mask(pl_name)]
+            ln = c3.number_input("Line", value=float(np.round(np.median(vals) * 2) / 2),
+                                 step=0.5, key=f"pr_l{i}")
+            side = c4.selectbox("Side", ["over", "under"], key=f"pr_s{i}")
+            od = c5.number_input("Odds", value=-110, step=5, key=f"pr_o{i}")
+            legs.append(play.Leg(player=pl_name, stat=stt, line=float(ln),
+                                 side=side, odds=float(od), label=mkt))
+
+        if ok and len(legs) >= 2:
+            conditional = st.checkbox(
+                "Assume all players active", value=True, key="pr_cond",
+                help="Books usually void a leg when a player does not dress. Untick "
+                     "to price a scratch as a loss instead.")
+            res = play.evaluate(legs, pr_slate, conditional=conditional)
+            if "error" in res:
+                st.error(res["error"])
+            else:
+                st.subheader("Legs")
+                lg_df = pd.DataFrame(res["legs"])[["leg", "probability", "fair_odds", "odds", "p_active"]]
+                lg_df["probability"] *= 100
+                lg_df["p_active"] = (lg_df["p_active"].astype(float) * 100).round(0)
+                st.dataframe(lg_df.rename(columns={
+                    "leg": "Leg", "probability": "Model %", "fair_odds": "Fair",
+                    "odds": "Your odds", "p_active": "Active %"}).round(1),
+                    hide_index=True, use_container_width=True)
+
+                a, b, c, d = st.columns(4)
+                a.metric("Correlated probability", f"{res['probability']*100:.2f}%")
+                b.metric("If independent", f"{res['naive_probability']*100:.2f}%")
+                c.metric("Fair price", f"{res['fair_odds']:+.0f}",
+                         delta=f"naive {res['naive_fair_odds']:+.0f}")
+                lift = res["correlation_lift"]
+                d.metric("Correlation lift", f"{lift:.2f}x",
+                         help="Above 1 means the legs help each other and a naive "
+                              "calculator understates the slip. Below 1 means they fight.")
+
+                if "expected_value_per_100" in res:
+                    e1, e2, e3 = st.columns(3)
+                    e1.metric("Offered price", f"{res['offered_american']:+.0f}")
+                    e2.metric("Break-even", f"{res['breakeven_probability']*100:.2f}%")
+                    e3.metric("EV per $100", f"{res['expected_value_per_100']:+.2f}")
+                    if res["expected_value_per_100"] <= 0:
+                        st.caption("Negative expected value at this price.")
+                if conditional:
+                    st.caption(f"All named players active in "
+                               f"{res['all_active_probability']*100:.0f}% of simulations.")
+
+                cm = play.correlation_matrix(legs, pr_slate)
+                if not cm.empty:
+                    st.subheader("How the legs move together")
+                    st.dataframe(cm.round(3), use_container_width=True)
+
+        st.divider()
+        st.subheader("Suggested slips")
+        s1, s2, s3 = st.columns(3)
+        sug_legs = s1.slider("Legs per slip", 2, 4, 2, key="pr_sn")
+        flavour = s2.selectbox("Style", ["correlated", "independent"], key="pr_flav",
+                               format_func=lambda x: "Same-game stack" if x == "correlated"
+                               else "Spread across games")
+        sug_n = s3.slider("Show", 3, 15, 6, key="pr_sc")
+        if st.button("Generate", key="pr_go"):
+            sug = play.suggest(pr_slate, n_legs=int(sug_legs), target=flavour,
+                               top_n=int(sug_n))
+            if sug.empty:
+                st.info("No combinations met the filters.")
+            else:
+                sug["probability"] *= 100
+                sug["naive"] *= 100
+                st.dataframe(sug.rename(columns={
+                    "legs": "Slip", "matchups": "Game(s)", "probability": "Model %",
+                    "naive": "If independent %", "correlation_lift": "Lift",
+                    "fair_odds": "Fair", "naive_fair_odds": "Naive fair"}).round(2),
+                    hide_index=True, use_container_width=True)
+                st.caption(
+                    "Ranked by the model's correlated probability, not by value — "
+                    "there are no prices here. A parlay is a worse bet than its legs "
+                    "however the correlation falls."
+                )
 
 # ------------------------------------------------------------- game model
 with tab_games:

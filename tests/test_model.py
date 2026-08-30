@@ -540,3 +540,168 @@ def test_pass_protection_moves_the_sack_rate():
     bad = pj.team_volume(scheme, gc, protection=1.40)
     assert good["sacks"] < bad["sacks"]
     assert good["attempts"] > bad["attempts"]
+
+
+# ------------------------------------------------------------- odds arithmetic
+def test_american_odds_round_trip():
+    from nflproj import picks as pk
+    for odds in (-250, -110, 100, 150, 400):
+        p = pk.american_to_probability(odds)
+        assert 0 < p < 1
+        assert pk.probability_to_american(p) == pytest.approx(odds, rel=1e-6)
+
+
+def test_favourite_and_underdog_prices_have_the_right_sign():
+    from nflproj import picks as pk
+    assert pk.probability_to_american(0.75) < 0     # favourite is negative
+    assert pk.probability_to_american(0.25) > 0     # underdog is positive
+    assert pk.american_to_probability(-110) > 0.5
+
+
+def test_expected_value_is_zero_at_the_fair_price():
+    from nflproj import picks as pk
+    p = 0.62
+    fair = pk.probability_to_american(p)
+    assert pk.expected_value(p, fair) == pytest.approx(0.0, abs=1e-6)
+    # Beating the fair price is positive, paying worse than it is negative.
+    assert pk.expected_value(p, fair + 60) > 0
+    assert pk.expected_value(0.50, -110) < 0
+
+
+def test_kelly_declines_a_negative_edge():
+    from nflproj import picks as pk
+    assert pk.kelly_fraction(0.50, -110) < 0
+    assert pk.kelly_fraction(0.70, +100) > 0
+
+
+def test_lines_track_each_player_own_distribution():
+    """A backup must not be handed a star's line and scored a 90% under."""
+    from nflproj import picks as pk
+    rng = np.random.default_rng(0)
+    star = pk.candidate_lines(rng.gamma(4, 21, 20000), "rush_yards")     # ~84 yds
+    backup = pk.candidate_lines(rng.gamma(3, 7, 20000), "rush_yards")    # ~21 yds
+    assert star and backup
+    assert min(star) > max(backup)
+
+
+def test_every_offered_line_sits_near_a_coin_flip():
+    """Lines chosen by rounding produced 79% unders; selection is on probability."""
+    from nflproj import picks as pk
+    rng = np.random.default_rng(1)
+    for stat, sample in (("rec_yards", rng.gamma(3, 20, 20000)),
+                         ("receptions", rng.poisson(4.2, 20000).astype(float)),
+                         ("carries", rng.poisson(11.0, 20000).astype(float))):
+        for line in pk.candidate_lines(sample, stat):
+            p_over = float((sample > line).mean())
+            assert pk.TARGET_BAND[0] <= p_over <= pk.TARGET_BAND[1], (stat, line, p_over)
+
+
+def test_markets_below_a_floor_are_not_offered():
+    from nflproj import picks as pk
+    assert pk.candidate_lines(np.full(500, 3.0), "rush_yards") == []
+    assert pk.candidate_lines(np.zeros(500), "total_td") == []
+
+
+# ------------------------------------------------------------------- parlay
+class _FakeGame:
+    """Two perfectly correlated legs and one independent, for exact arithmetic."""
+
+    def __init__(self, n=20000, seed=0):
+        rng = np.random.default_rng(seed)
+        self.n_sims = n
+        base = rng.random(n)
+        self.players = {
+            "A": {"yards": base * 100},
+            "B": {"yards": base * 100},          # identical to A
+            "C": {"yards": rng.random(n) * 100},  # independent
+        }
+        self.meta = {k: {"position": "WR", "team": "AAA", "depth_rank": 1,
+                         "p_active": 1.0, "player_id": k} for k in self.players}
+        self.active = {k: np.ones(n, dtype=bool) for k in self.players}
+        self.home, self.away = "AAA", "BBB"
+
+    def stat(self, p, s):
+        return self.players.get(p, {}).get(s)
+
+    def active_mask(self, *players):
+        m = np.ones(self.n_sims, dtype=bool)
+        for p in players:
+            m &= self.active[p]
+        return m
+
+    def leg_mask(self, p, s, line, side="over"):
+        v = self.stat(p, s)
+        return None if v is None else ((v > line) if side == "over" else (v <= line))
+
+
+def test_perfectly_correlated_legs_beat_the_naive_product():
+    from nflproj import parlay as pl
+    g = _FakeGame()
+    legs = [pl.Leg("A", "yards", 50), pl.Leg("B", "yards", 50)]
+    r = pl.evaluate(legs, [g])
+    # Identical legs: the parlay is just the single leg, not its square.
+    assert r["probability"] == pytest.approx(0.5, abs=0.02)
+    assert r["naive_probability"] == pytest.approx(0.25, abs=0.02)
+    assert r["correlation_lift"] == pytest.approx(2.0, rel=0.08)
+
+
+def test_independent_legs_match_the_naive_product():
+    from nflproj import parlay as pl
+    g = _FakeGame()
+    r = pl.evaluate([pl.Leg("A", "yards", 50), pl.Leg("C", "yards", 50)], [g])
+    assert r["probability"] == pytest.approx(r["naive_probability"], abs=0.02)
+    assert r["correlation_lift"] == pytest.approx(1.0, abs=0.08)
+
+
+def test_opposing_legs_fall_below_the_naive_product():
+    from nflproj import parlay as pl
+    g = _FakeGame()
+    # A over and B under are mutually exclusive, since B mirrors A exactly.
+    r = pl.evaluate([pl.Leg("A", "yards", 50, "over"),
+                     pl.Leg("B", "yards", 50, "under")], [g])
+    assert r["probability"] == pytest.approx(0.0, abs=0.01)
+    assert r["naive_probability"] > 0.2
+
+
+def test_parlay_reports_a_fair_price_and_expected_value():
+    from nflproj import parlay as pl
+    g = _FakeGame()
+    legs = [pl.Leg("A", "yards", 50, odds=-110), pl.Leg("C", "yards", 50, odds=-110)]
+    r = pl.evaluate(legs, [g])
+    assert "offered_american" in r and "expected_value_per_100" in r
+    assert r["breakeven_probability"] == pytest.approx(1 / r["offered_decimal"])
+
+
+def test_parlay_rejects_a_player_it_never_simulated():
+    from nflproj import parlay as pl
+    r = pl.evaluate([pl.Leg("Nobody", "yards", 50)], [_FakeGame()])
+    assert "error" in r
+
+
+def test_correlation_matrix_recovers_the_structure():
+    from nflproj import parlay as pl
+    g = _FakeGame()
+    cm = pl.correlation_matrix([pl.Leg("A", "yards", 50), pl.Leg("B", "yards", 50),
+                                pl.Leg("C", "yards", 50)], [g])
+    assert cm.iloc[0, 1] == pytest.approx(1.0, abs=0.02)   # identical
+    assert cm.iloc[0, 2] == pytest.approx(0.0, abs=0.05)   # independent
+
+
+# -------------------------------------------------- joint simulation shape
+def test_dirichlet_shares_sum_to_one_per_simulation():
+    from nflproj import joint as jt
+    rng = np.random.default_rng(0)
+    shares = jt._dirichlet_shares(rng, np.array([0.4, 0.35, 0.25]), 30.0, 500)
+    assert shares.shape == (500, 3)
+    assert np.allclose(shares.sum(axis=1), 1.0)
+    # The mean should track the base allocation it was given.
+    assert shares.mean(axis=0)[0] == pytest.approx(0.4, abs=0.05)
+
+
+def test_shared_shocks_are_configured_to_be_nonzero():
+    """Zeroed shocks would silently collapse the model to independence."""
+    from nflproj import joint as jt
+    assert jt.PACE_SHOCK_SD > 0
+    assert jt.SCORING_SHOCK_SD > 0
+    assert jt.MARGIN_SHOCK_SD > 0
+    assert jt.SHOOTOUT_PLAYS > 0

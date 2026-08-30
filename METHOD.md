@@ -393,6 +393,73 @@ inventing one. Roof and divisional status *are* known in advance and always
 apply. The app exposes a wind slider so a forecast can be entered by hand during
 game week.
 
+## Correlated simulation, and why parlays need it
+
+The projection board simulates each player independently. That is correct for
+any single line and wrong for anything combining two.
+
+A quarterback's passing yards and his receiver's receiving yards are the same
+event counted at both ends of the throw. A quarterback and his own running back
+pull against each other through game script. Multiplying leg probabilities — what
+every parlay calculator does — assumes independence, and the error runs in
+opposite directions for those two cases.
+
+`nflproj/joint.py` simulates a whole game once with shared randomness and reads
+every leg off the same draws, so nothing is assumed away:
+
+* a **pace** shock, moving both teams' play counts together;
+* a **scoring** shock, the shootout-or-slugfest axis, which also lengthens the
+  game — without that term the only link between the two teams is the margin,
+  which pushes them apart and makes opposing quarterbacks negatively correlated
+  when in reality they rise together;
+* a **margin** shock, so who wins varies independently of how much scoring there
+  is. With only a shared scoring shock the margin is pinned to the fixed
+  difference in implied points and nobody is ever blown out, so game script never
+  fires;
+* **game script** — the trailing team throws, the leading team runs;
+* player shares drawn from a **Dirichlet** within each team, so one receiver's
+  big game is another's quiet one.
+
+Passing yardage is not drawn at all: it is summed from the receivers, because
+that is what it physically is.
+
+### Calibration
+
+Shock sizes were fitted to within-team dispersion and same-game correlations
+measured over 2022–2025, not chosen by feel:
+
+| | simulated | measured |
+| --- | --- | --- |
+| QB pass yards vs his WR1 | +0.47 | **+0.51** |
+| QB attempts vs his WR1 | +0.34 | +0.27 |
+| Pass attempts, coefficient of variation | 0.23 | 0.21 |
+| QB pass yards vs his own RB | −0.02 | −0.15 |
+| Opposing quarterbacks | +0.02 | +0.14 |
+
+The dominant relationship — a quarterback with his own receiver, which is the
+same-game stack people actually build — lands within four points of the measured
+figure. The last two rows are directionally right but understated, so the model
+treats a quarterback-and-his-own-back combination, and anything spanning both
+sidelines, as *more independent* than they really are. Those slips are priced
+conservatively rather than wrongly.
+
+Correlations are reported conditional on the named players being active. A
+scratch usually voids a leg rather than losing it, so that is how a book
+effectively prices one; the app can switch to counting a scratch as a loss.
+
+## Best picks, and what "best" can honestly mean
+
+There is no odds feed in this project. Without prices, a ranking cannot identify
+value — only confidence, which is a much weaker claim. A 90% leg at −1200 is a
+bad bet. The app therefore ranks what the model is most sure of, labels it as
+exactly that, and computes real expected value only once a price is entered.
+
+Lines are generated around each player's own projection rather than from a fixed
+grid. An earlier version hung a fixed set of round numbers on everybody, which
+handed a backup running back a 79.5-yard rushing line and then ranked the under
+at 90% — confidence manufactured by an absurd line rather than by knowing
+anything. Markets below a per-statistic floor are not offered at all.
+
 ## What this does not do
 
 - **The coaching registry is research, not a feed.** It was assembled from
@@ -418,6 +485,10 @@ game week.
   were real historically and are not any more.
 - **No true rivalry variable**, only divisional status.
 - **Weather must be entered by hand** for future games; it is not forecast.
+- **No odds feed.** Prices must be typed in for expected value to mean anything;
+  nothing here identifies a mispriced market on its own.
+- **Cross-sideline and quarterback-versus-back correlations are understated**,
+  so those parlays price conservatively.
 - **The game model does not beat the market**, and is not built to. It has no
   access to injury reports, weather, or news, and it has no mechanism for the
   in-week information that moves a line.

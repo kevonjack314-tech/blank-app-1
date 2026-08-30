@@ -71,6 +71,13 @@ waiting. Comment out that line in the `Dockerfile` to fetch lazily instead.
 - **Game predictions** — independent margin, total and win probability per game
   from opponent-adjusted EPA ratings, shown next to the market line. It beats the
   naive baselines and loses to the closing line; see below.
+- **Players** — every projected player by position group, with distributions,
+  percentiles and a full line sheet.
+- **Best picks** — the model's highest-confidence sides across a week, with an
+  expected-value calculator once you enter a price.
+- **Parlay builder** — legs priced against one shared simulation, so correlation
+  is carried rather than assumed away. Same-team stacks come out 15–25% likelier
+  than a naive calculator says; cross-game legs correctly show no lift.
 - **Coverage** — man/zone rates and coverage shells per defence, how each offence
   fares against each structure, route menus and personnel groupings, from nflverse
   participation charting.
@@ -133,6 +140,25 @@ That last row is why rushing is split into blocking and back rather than
 projected as one yards-per-carry number: the line persists, broken tackles do
 not.
 
+## Parlays are priced on correlation, not independence
+
+Multiplying leg probabilities assumes they are independent. Same-game legs never
+are — a quarterback over his passing yards and his receiver over his receiving
+yards are close to the same bet. Because the game is simulated once with shared
+randomness, a parlay's probability is simply the share of simulations in which
+every leg lands, and the naive figure is shown alongside so the correction is
+visible.
+
+Measured against real 2022–2025 same-game correlations, the dominant
+relationship lands close: QB passing yards with his WR1 simulates at +0.47
+against a measured +0.51. Quarterback-versus-running-back and cross-sideline
+pairs are directionally right but understated, so those slips price
+conservatively.
+
+**There is no odds feed here.** "Best picks" ranks confidence, not value — a 90%
+leg at −1200 is still a bad bet. Enter a price and the app computes real expected
+value and a Kelly stake.
+
 ## Travel, weather and divisional games
 
 All four were tested over 7,276 games with a closing line (1999–2025) and
@@ -169,6 +195,9 @@ nflproj/
   blocking.py      offensive line vs running back decomposition
   kicking.py       field goal and extra point projections
   gamemodel.py     team ratings, margin/total/win probability
+  joint.py         correlated whole-game simulation
+  picks.py         player line sheets, best picks, odds arithmetic
+  parlay.py        correlated parlay pricing
   venues.py        stadium geography, climate, travel and environment
   report.py        scouting language
 scripts/
