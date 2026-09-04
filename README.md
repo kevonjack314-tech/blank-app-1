@@ -39,14 +39,28 @@ waiting. Comment out that line in the `Dockerfile` to fetch lazily instead.
 
 ### What to watch when hosting
 
-- **Memory.** Loading the model peaks around 620 MB and a full 20,000-simulation
-  slate held live takes it to **800 MB**, which fits the 1 GB free tier with
-  about 200 MB of headroom. Three things keep it there: play-by-play is read
-  season by season rather than all at once, repeated strings are stored as
-  categories, and simulated samples are held as `float32` — a slate is sixteen
-  games of roughly fifty players over nine statistics, and at double precision
-  that alone was 440 MB and put a cold start over the limit. If you widen
-  `HISTORY_SEASONS` or raise the simulation count, re-measure before deploying.
+- **Memory.** Loading the model takes about 530 MB; browsing weeks settles at
+  **~815 MB** and stays there — measured flat across ten weeks — which fits the
+  1 GB free tier. Four things keep
+  it there, and the last two are less obvious than they look:
+  play-by-play is read season by season rather than all at once; repeated
+  strings are stored as categories; every Streamlit cache is bounded
+  (`max_entries=1` — the default is unbounded, and each week a reader clicks
+  holds another slate); and **each player's nine simulated statistics share one
+  allocation**.
+
+  That last one is not micro-optimisation. glibc serves allocations at or above
+  its 128 KB mmap threshold with their own mapping, returned to the OS the
+  moment they are freed; anything smaller comes off the heap, where a freed
+  chunk is only returned if it sits at the top — interleaved with pandas
+  objects, it never does. Nine separate arrays are 40 KB each and fragment the
+  heap; one block of nine is 360 KB and is released cleanly. With them separate,
+  resident memory climbed 626 → 870 → 1205 → 1517 → 2073 MB as a reader browsed
+  weeks — while the live object count stayed correctly bounded — and the app was
+  killed. Two tests guard this.
+
+  If you widen `HISTORY_SEASONS` or change `SIMS_PER_GAME`, re-measure: dropping
+  the simulation count far enough puts the block back under the threshold.
 - **Ephemeral disk.** Most free hosts wipe the filesystem on restart, so the
   140 MB download repeats on every cold boot. A small persistent volume mounted
   at `data/` removes that.

@@ -88,8 +88,35 @@ SAMPLE_DTYPE = np.float32
 
 
 def _store(samples: dict) -> dict:
-    """Cast one player's simulated line to the storage dtype."""
-    return {k: np.asarray(v, dtype=SAMPLE_DTYPE) for k, v in samples.items()}
+    """One player's simulated line, as views into a single allocation.
+
+    The result is an ordinary ``{stat: array}`` dict, so every caller is
+    unchanged - but the arrays are rows of one contiguous block rather than
+    nine separate buffers, and that difference decides whether the app
+    survives.
+
+    glibc serves an allocation at or above its mmap threshold (128 KB) with its
+    own mapping, handed straight back to the operating system when freed.
+    Anything smaller comes off the heap, where a freed chunk is only returned if
+    it happens to sit at the top - interleaved with pandas objects, it never
+    does. Nine separate arrays at 10,000 float32 samples are 40 KB each: heap,
+    and unreturnable. One block of nine is 360 KB: mapped, and released cleanly.
+
+    The symptom when this was wrong was a process whose live object count was
+    correctly bounded at two slates while its resident size climbed
+    626 -> 870 -> 1205 -> 1517 MB as a reader browsed weeks, until a 1 GB
+    container killed it.
+    """
+    keys = list(samples)
+    if not keys:
+        return {}
+    rows = [np.asarray(samples[k], dtype=SAMPLE_DTYPE) for k in keys]
+    n = rows[0].shape[0]
+    block = np.empty((len(keys), n), dtype=SAMPLE_DTYPE)
+    for i, row in enumerate(rows):
+        block[i] = row
+    # Each value is a view; the block stays alive as long as any of them does.
+    return {k: block[i] for i, k in enumerate(keys)}
 
 
 @dataclass

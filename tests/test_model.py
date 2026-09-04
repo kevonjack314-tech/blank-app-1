@@ -1185,3 +1185,62 @@ def test_dockerfile_ships_the_data_files_the_app_reads():
     docker = (root / "Dockerfile").read_text()
     for f in (root / "data").glob("*.yaml"):
         assert f.name in docker, f"{f.name} is read at runtime but never copied into the image"
+
+
+def test_every_streamlit_cache_is_bounded():
+    """Streamlit caches are unbounded by default, and the two large things this
+    app caches are a ~570 MB loaded model and a ~300 MB simulated slate. Left
+    unbounded, each week a reader clicks is held forever: measured, the second
+    week reached 1039 MB and the fourth 1641 MB, so a 1 GB container is killed
+    on the second click."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    decorators = re.findall(r"@st\.cache_(?:resource|data)\((.*?)\)\s*\ndef",
+                            src, re.S)
+    assert decorators, "no caches found; this check has gone stale"
+    for d in decorators:
+        assert "max_entries" in d, f"unbounded cache: @st.cache_...({d.strip()[:70]})"
+
+
+def test_simulation_arrays_are_large_enough_to_be_mmapped():
+    """The crash this guards against.
+
+    glibc serves allocations at or above its mmap threshold (128 KB by default)
+    with their own mapping, which is returned to the operating system the
+    moment it is freed. Anything smaller comes off the heap, where a freed
+    chunk can only be returned if it happens to sit at the top - and interleaved
+    with pandas objects it never does.
+
+    Storing samples as float32 halved the resting footprint and, as a side
+    effect nobody looked for, took each array from 156 KB to 78 KB: below the
+    threshold. Live objects stayed correctly bounded at two slates while
+    resident memory climbed 626 -> 870 -> 1205 -> 1517 MB as a reader browsed
+    weeks, and a 1 GB container killed the app.
+
+    ``nflproj`` lowers the threshold at import so these arrays are mapped
+    again. This test fails if a future change puts an array back under it."""
+    import nflproj
+    from nflproj import joint as jnt
+
+    # A player's nine statistics share one allocation, so the size that matters
+    # is the block rather than a single row.
+    block = jnt._store({f"s{i}": np.zeros(10000) for i in range(9)})
+    base = block["s0"].base
+    assert base is not None, "rows must be views of one block, not separate buffers"
+    assert all(v.base is base for v in block.values())
+    assert base.nbytes >= nflproj._MMAP_THRESHOLD_BYTES, (
+        f"a {base.nbytes // 1024} KB block is below the "
+        f"{nflproj._MMAP_THRESHOLD_BYTES // 1024} KB mmap threshold and will "
+        "fragment the heap")
+    assert nflproj._MMAP_THRESHOLD_BYTES <= 128 * 1024, (
+        "the tuned threshold must not exceed glibc's default")
+
+
+def test_the_allocator_is_tuned_on_linux():
+    import platform
+    import nflproj
+
+    if platform.system() == "Linux":
+        assert nflproj.ALLOCATOR_TUNED, "mallopt call did not take effect"

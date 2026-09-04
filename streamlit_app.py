@@ -91,7 +91,16 @@ def _first_run_sync() -> None:
                       state="complete", expanded=False)
 
 
-@st.cache_resource(show_spinner="Loading play-by-play, charting and depth charts…")
+# Every cache in this file is bounded, and that is not a tuning preference.
+# Streamlit's default is an unbounded cache, and both of the things cached here
+# are large: a loaded model is about 570 MB and one simulated slate is another
+# 300 MB. Left unbounded, each distinct week a reader clicks is held forever, so
+# the second week took the process to 1039 MB and the fourth to 1641 MB - past
+# a 1 GB container on the second click. Holding one entry costs a re-run when
+# the week changes (about 30 seconds, behind a spinner) and is the difference
+# between an app that is slow for a moment and an app that is killed.
+@st.cache_resource(max_entries=1,
+                   show_spinner="Loading play-by-play, charting and depth charts…")
 def load(through_week: int | None = None):
     ctx = pipeline.build_context(through_week=through_week)
     pm = pipeline.project_team_schemes(ctx)
@@ -163,22 +172,37 @@ WEEK = int(_wsel)
 )
 
 
-@st.cache_resource(show_spinner="Attaching charted routes…")
+@st.cache_resource(max_entries=1, show_spinner="Attaching charted routes…")
 def _routed_plays():
     """Charted route on each target, canonicalised across seasons."""
     return rt.attach_routes(ctx.plays, ctx.participation)
 
 
-@st.cache_resource(show_spinner="Measuring explosive rates…")
+@st.cache_resource(max_entries=1, show_spinner="Measuring explosive rates…")
 def _explosive_profile():
     """How often each player's touches break for twenty yards. Used to shape
     the tail on longshot props, so it is worth computing once."""
     return gp.explosive_profile(ctx.plays)
 
 
-@st.cache_resource(show_spinner="Simulating the slate…")
-def simulate_week(week: int, n_sims: int = 20000):
-    """Simulate every game in a week jointly, so correlated legs price right."""
+# Simulations per game. A slate is sixteen games of roughly fifty players over
+# nine statistics, so this number sets the largest object in the process:
+# 275 MB at 10,000, 549 MB at 20,000. Two slates are briefly alive when the
+# week changes, so the higher figure does not fit a 1 GB container.
+#
+# The precision given up is small and measurable. Monte Carlo standard error on
+# a reported probability goes from 0.12% to 0.17% for a 3% longshot, and from
+# 0.32% to 0.46% for a 70% pick - well inside the model's own calibration
+# error, which the backtest puts near a full point on touchdown probability.
+SIMS_PER_GAME = 10000
+
+
+@st.cache_resource(max_entries=1, show_spinner="Simulating the slate…")
+def simulate_week(week: int, n_sims: int = SIMS_PER_GAME):
+    """Simulate every game in a week jointly, so correlated legs price right.
+
+    Call it through ``slate_for`` rather than directly - see the note there.
+    """
     sched = board.schedule_for(ctx.games, PROJECTION_SEASON, int(week))
     gcs = board.game_contexts(ctx.games, PROJECTION_SEASON, int(week))
     envs = board.game_environments(ctx.games, PROJECTION_SEASON, int(week))
@@ -191,6 +215,25 @@ def simulate_week(week: int, n_sims: int = 20000):
         except Exception:
             continue
     return out
+
+
+def slate_for(week: int):
+    """The week's slate, holding only one at a time.
+
+    Bounding the cache to one entry is not enough on its own. Streamlit
+    computes a new cached value *before* evicting the old one, so changing week
+    briefly holds two slates - about 300 MB each - and that transient is what
+    takes the process past a 1 GB container even though the settled figure is
+    comfortable. Dropping the previous slate first makes the peak the same as
+    the resting state.
+
+    All three tabs call this with the same week in a single script run, so the
+    clear fires once per actual week change rather than once per tab.
+    """
+    if st.session_state.get("_slate_week") != week:
+        simulate_week.clear()
+        st.session_state["_slate_week"] = week
+    return simulate_week(week)
 
 
 def _distribution_chart(values, line: float, title: str):
@@ -267,7 +310,7 @@ with tab_players:
     stat = dict((lab, k) for k, lab in stat_menu)[stat_label]
     show_n = c3.slider("Players shown", 10, 60, 20, 5, key="lb_n")
 
-    slate = simulate_week(WEEK)
+    slate = slate_for(WEEK)
     table = lb.leaderboard(slate, positions, stat)
 
     if table.empty:
@@ -338,7 +381,7 @@ with tab_players:
 with tab_picks:
     mode = st.radio("Show", ["Best picks", "Lotto plays"], horizontal=True,
                     key="pk_mode", label_visibility="collapsed")
-    slate = simulate_week(WEEK)
+    slate = slate_for(WEEK)
 
     if mode == "Best picks":
         st.subheader(f"Week {WEEK} — what the model is most sure of")
@@ -506,7 +549,7 @@ with tab_parlay:
     if go:
         st.session_state.pg_seed += 1
 
-    slate = simulate_week(WEEK)
+    slate = slate_for(WEEK)
     result = play.generate(slate, n_legs=int(n_legs), style=style,
                            correlated=(stack == "Same-team stack"),
                            seed=st.session_state.pg_seed)
