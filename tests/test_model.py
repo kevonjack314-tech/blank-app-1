@@ -1244,3 +1244,80 @@ def test_the_allocator_is_tuned_on_linux():
 
     if platform.system() == "Linux":
         assert nflproj.ALLOCATOR_TUNED, "mallopt call did not take effect"
+
+
+# ------------------------------------------------------- damaged data cache
+def test_a_truncated_parquet_is_recognised_as_damaged(tmp_path):
+    """What a process killed mid-write leaves behind. Reading one of these is
+    not merely an error - pyarrow can take the process down with it."""
+    from nflproj import data as ndata
+
+    good = tmp_path / "good.parquet"
+    pd.DataFrame({"a": range(100)}).to_parquet(good)
+    assert ndata.looks_like_parquet(good)
+
+    truncated = tmp_path / "truncated.parquet"
+    truncated.write_bytes(good.read_bytes()[: good.stat().st_size // 3])
+    assert not ndata.looks_like_parquet(truncated)
+
+    # the other way a cache gets poisoned: an error page served with status 200
+    html = tmp_path / "html.parquet"
+    html.write_bytes(b"<!DOCTYPE html><html>rate limited</html>")
+    assert not ndata.looks_like_parquet(html)
+
+    assert not ndata.looks_like_parquet(tmp_path / "missing.parquet")
+    empty = tmp_path / "empty.parquet"
+    empty.write_bytes(b"")
+    assert not ndata.looks_like_parquet(empty)
+
+
+def test_a_damaged_cache_entry_is_discarded_rather_than_read(tmp_path, monkeypatch):
+    """Existence is not integrity.
+
+    The deployed app died on exactly this: an interrupted download left a
+    truncated file, the cache check only asked whether the file existed, and
+    nothing ever re-fetched it. One bad download was a permanent outage."""
+    from nflproj import data as ndata
+
+    good = tmp_path / "src.parquet"
+    pd.DataFrame({"a": range(100)}).to_parquet(good)
+    payload = good.read_bytes()
+
+    dest = tmp_path / "cached.parquet"
+    dest.write_bytes(payload[: len(payload) // 3])        # damaged
+
+    calls = []
+
+    def fake_download(url, target, timeout=120):
+        calls.append(url)
+        target.write_bytes(payload)
+        return True
+
+    monkeypatch.setattr(ndata, "_download", fake_download)
+    assert ndata._ensure("http://example/x.parquet", dest) is True
+    assert calls == ["http://example/x.parquet"], "damaged file was not re-fetched"
+    assert ndata.looks_like_parquet(dest)
+
+    # a healthy file is left alone
+    calls.clear()
+    assert ndata._ensure("http://example/x.parquet", dest) is True
+    assert calls == [], "a healthy cache entry should not be re-fetched"
+
+
+def test_a_download_never_half_writes_its_destination(tmp_path, monkeypatch):
+    """The write goes to a temporary file and is moved into place, so a failure
+    leaves the destination absent rather than truncated."""
+    from nflproj import data as ndata
+
+    dest = tmp_path / "asset.parquet"
+
+    class _Resp:
+        content = b"<!DOCTYPE html>not parquet at all"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(ndata.requests, "get", lambda *a, **k: _Resp())
+    assert ndata._download("http://example/x.parquet", dest) is False
+    assert not dest.exists(), "a rejected body must not be left on disk"
+    assert not list(tmp_path.glob("*.part*")), "temporary file was not cleaned up"

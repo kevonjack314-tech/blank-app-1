@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from functools import lru_cache
 
 import pandas as pd
@@ -40,7 +41,46 @@ STATIC_ASSETS = {
 }
 
 
+# Every parquet file starts and ends with these four bytes. Checking them is
+# far cheaper than parsing, and it catches the two things that actually go
+# wrong: a half-written file, and an HTML error page served with status 200.
+PARQUET_MAGIC = b"PAR1"
+
+
+def _is_parquet(data: bytes) -> bool:
+    return (len(data) > 8 and data[:4] == PARQUET_MAGIC
+            and data[-4:] == PARQUET_MAGIC)
+
+
+def looks_like_parquet(path) -> bool:
+    """Whether a cached file is a complete parquet file.
+
+    Reads eight bytes rather than the whole file. Worth doing before handing
+    anything to pyarrow: a truncated parquet does not always raise, it can take
+    the process down with a segmentation fault, and a crashed process leaves
+    the bad file in place to do it again on the next start.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+            f.seek(-4, 2)
+            tail = f.read(4)
+    except OSError:
+        return False
+    return head == PARQUET_MAGIC and tail == PARQUET_MAGIC
+
+
 def _download(url: str, dest, timeout: int = 120) -> bool:
+    """Fetch one asset, and leave the destination either correct or absent.
+
+    The write goes to a temporary file beside the destination and is moved into
+    place with ``os.replace``, which is atomic. The previous version wrote
+    straight to the destination, so a process killed mid-write - by a redeploy,
+    or by a container running out of memory - left a truncated file behind.
+    Nothing ever re-fetched it, because the cache check only asked whether the
+    file existed, and it did. One interrupted download poisoned the cache
+    permanently and the app could not start again.
+    """
     try:
         r = requests.get(url, timeout=timeout)
         r.raise_for_status()
@@ -55,8 +95,39 @@ def _download(url: str, dest, timeout: int = 120) -> bool:
     except Exception as exc:  # network trouble
         log.warning("could not fetch %s (%s)", url, exc)
         return False
-    dest.write_bytes(r.content)
+
+    body = r.content
+    if str(dest).endswith(".parquet") and not _is_parquet(body):
+        log.warning("not a parquet file: %s (%d bytes)", url, len(body))
+        return False
+
+    tmp = dest.with_name(dest.name + f".part{os.getpid()}")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(body)
+        os.replace(tmp, dest)          # atomic within one filesystem
+    except Exception as exc:
+        log.warning("could not write %s (%s)", dest, exc)
+        tmp.unlink(missing_ok=True)
+        return False
     return True
+
+
+def _ensure(url: str, dest, refresh: bool = False) -> bool:
+    """Make sure ``dest`` holds a complete asset, re-fetching a damaged one.
+
+    Existence is not integrity. A cached file that will not parse is deleted
+    and fetched again rather than being read forever, which is what turns a
+    single interrupted download from a permanent outage into a slow start.
+    """
+    if refresh:
+        dest.unlink(missing_ok=True)
+    if dest.exists():
+        if not str(dest).endswith(".parquet") or looks_like_parquet(dest):
+            return True
+        log.warning("discarding damaged cache %s; re-fetching", dest)
+        dest.unlink(missing_ok=True)
+    return _download(url, dest)
 
 
 def fetch(asset: str, season: int | None = None, refresh: bool = False):
@@ -73,13 +144,15 @@ def fetch(asset: str, season: int | None = None, refresh: bool = False):
         rel, fname = path_tmpl.format(season=season), file_tmpl.format(season=season)
 
     dest = RAW / fname
-    if refresh or not dest.exists():
-        if not _download(f"{NFLVERSE}/{rel}", dest):
-            return None
+    if not _ensure(f"{NFLVERSE}/{rel}", dest, refresh=refresh):
+        return None
     try:
         return pd.read_parquet(dest)
     except Exception as exc:
-        log.warning("unreadable cache %s (%s)", dest, exc)
+        # Parsed as parquet and still failed: the magic bytes were right but
+        # the body is wrong. Drop it so the next start fetches a clean copy.
+        log.warning("unreadable cache %s (%s); discarding", dest, exc)
+        dest.unlink(missing_ok=True)
         return None
 
 
@@ -106,13 +179,14 @@ def play_by_play(seasons=HISTORY_SEASONS, columns=None) -> pd.DataFrame:
     frames = []
     for season in seasons:
         path = RAW / ASSETS["pbp"][1].format(season=season)
-        if not path.exists() and not _download(f"{NFLVERSE}/{ASSETS['pbp'][0].format(season=season)}", path):
+        if not _ensure(f"{NFLVERSE}/{ASSETS['pbp'][0].format(season=season)}", path):
             continue
         try:
             # Read only the needed columns off disk rather than after loading.
             df = pd.read_parquet(path, columns=list(columns) if columns else None)
         except Exception as exc:
-            log.warning("unreadable play-by-play %s (%s)", path, exc)
+            log.warning("unreadable play-by-play %s (%s); discarding", path, exc)
+            path.unlink(missing_ok=True)
             continue
         df["season"] = season
         for col in ("posteam", "defteam", "home_team", "away_team", "td_team"):
@@ -242,15 +316,15 @@ def participation(seasons=HISTORY_SEASONS) -> pd.DataFrame:
     frames = []
     for season in seasons:
         path = RAW / ASSETS["participation"][1].format(season=season)
-        if not path.exists() and not _download(
-                f"{NFLVERSE}/{ASSETS['participation'][0].format(season=season)}", path):
+        if not _ensure(f"{NFLVERSE}/{ASSETS['participation'][0].format(season=season)}", path):
             continue
         try:
             import pyarrow.parquet as _pq
             avail = set(_pq.read_schema(path).names)
             df = pd.read_parquet(path, columns=[c for c in keep_raw if c in avail])
         except Exception as exc:
-            log.warning("unreadable participation %s (%s)", path, exc)
+            log.warning("unreadable participation %s (%s); discarding", path, exc)
+            path.unlink(missing_ok=True)
             continue
         df["season"] = season
         frames.append(df)

@@ -48,6 +48,10 @@ def _tune_allocator() -> bool:
         return False
     try:
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        # Declared explicitly rather than relying on ctypes' defaults, so the
+        # call cannot be miscompiled into something that corrupts the stack.
+        libc.mallopt.argtypes = [ctypes.c_int, ctypes.c_int]
+        libc.mallopt.restype = ctypes.c_int
         return libc.mallopt(_M_MMAP_THRESHOLD, _MMAP_THRESHOLD_BYTES) == 1
     except Exception as exc:          # musl, a hardened libc, anything unusual
         log.debug("could not tune allocator (%s); using platform defaults", exc)

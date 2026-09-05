@@ -147,8 +147,24 @@ with st.sidebar:
             "played."
         )
 
-(ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings,
- team_proj, scoring, cov_plays, cov_fp) = load(_through)
+try:
+    (ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings,
+     team_proj, scoring, cov_plays, cov_fp) = load(_through)
+except Exception as exc:                                   # noqa: BLE001
+    # Almost always a data problem rather than a code one: the nflverse cache
+    # is missing or was damaged by an interrupted download. Say so, because
+    # the alternative is a raw traceback that tells a reader nothing about
+    # what to do, and because the fix is genuinely just "start it again".
+    st.error(
+        "**The model could not load its data.**\n\n"
+        f"`{type(exc).__name__}: {exc}`\n\n"
+        "This is normally a half-finished download. Damaged files are now "
+        "detected and re-fetched automatically, so **reloading this page "
+        "usually fixes it** — the first load after a failure has to pull the "
+        "missing data again and takes a couple of minutes.",
+        icon="🛑",
+    )
+    st.stop()
 
 if ctx.current_season:
     st.sidebar.success(f"In-season: built through week {ctx.through_week - 1}")
