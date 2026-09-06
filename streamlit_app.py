@@ -716,10 +716,58 @@ with tab_games:
     if not calls:
         st.info("No games scheduled for this week.")
     else:
+        st.warning(
+            f"**The spread picks below do not win.** Measured over "
+            f"{coach.ATS_SAMPLE} held-out games the model goes "
+            f"**{coach.ATS_RECORD*100:.1f}%** against the number, where "
+            f"{coach.ATS_BREAKEVEN*100:.1f}% is break-even at -110, and no cut "
+            "by disagreement size rescues it — one point out to seven-plus runs "
+            "41.8 / 50.0 / 50.0 / 50.8 / 45.8 / 52.4%. That is a coin flip with "
+            "the juice taken out.\n\n"
+            f"**And here is why.** The model sides with the underdog "
+            f"{coach.ATS_UNDERDOG_RATE*100:.0f}% of the time — not because it "
+            "likes dogs, but because its own margins are compressed. Ratings are "
+            "regressed hard toward the mean, so projected margins have a standard "
+            f"deviation of {coach.MODEL_MARGIN_SD:.1f} points against the market's "
+            f"{coach.MARKET_MARGIN_SD:.1f}. A number that always sits closer to a "
+            "pick\u2019em than the line does will take the dog nearly every week by "
+            "construction. So these sides are largely a reading of the model\u2019s own "
+            "compression rather than of the game \u2014 which is exactly what a 48% "
+            "record looks like.\n\n"
+            f"Totals are a better story and still not a green light: "
+            f"{coach.TOTALS_ALL*100:.1f}% overall, but "
+            f"**{coach.TOTALS_EDGE2*100:.1f}%** over "
+            f"{coach.TOTALS_EDGE2_SAMPLE} games when the model differs by two "
+            "points or more, holding in both held-out seasons. That is z = 1.8 "
+            "and one of fifteen cuts tried, so it is worth watching for another "
+            "season rather than banking on.",
+            icon="📋",
+        )
+
         for c in calls:
             icon = {"strong": "🟢", "lean": "🟡", "coin flip": "⚪"}[c["confidence"]]
             with st.container(border=True):
                 st.markdown(f"### {icon} {c['headline']}")
+
+                sp, tt = c.get("spread"), c.get("total")
+                if sp or tt:
+                    b1, b2 = st.columns(2)
+                    if sp:
+                        b1.metric("Spread side", sp["label"],
+                                  delta=f"{sp['edge_points']:.1f} pts off the line",
+                                  delta_color="off",
+                                  help="Which side the model's own margin takes. "
+                                       "Measured 48.2% against the number.")
+                    if tt:
+                        b2.metric("Total side", tt["label"],
+                                  delta=f"{tt['edge_points']:.1f} pts off"
+                                        + (" · in the measured band"
+                                           if tt["in_measured_band"] else ""),
+                                  delta_color="off",
+                                  help="Over/under the posted total. The two-point "
+                                       "band is the only cut with anything behind "
+                                       "it, and it is unconfirmed.")
+
                 for reason in c["reasons"]:
                     st.markdown(f"- {reason}")
                 if c["disagreement"]:

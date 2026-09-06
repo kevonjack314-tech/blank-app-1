@@ -51,6 +51,53 @@ MAX_REASONS = 4
 MODEL_WINNER_ACCURACY = 0.647
 MARKET_WINNER_ACCURACY = 0.684
 
+# Against the spread, over 539 held-out games with a result (pushes dropped).
+# At -110 the break-even is 52.38%.
+#
+# There is no edge here and no threshold rescues it. Sliced by the size of the
+# disagreement the record runs 41.8% / 50.0% / 50.0% / 50.8% / 45.8% / 52.4%
+# from one point out to seven-plus, which is a coin flip with the vig taken out
+# of it. Two cuts appear to clear the bar - disagreements of seven or more
+# points (52.4%) and games with a line of seven or more (52.8%) - and both sit
+# inside their own error bars at n = 21 and n = 144. They are what turns up when
+# you try fifteen cuts, not findings.
+ATS_RECORD = 0.482
+ATS_SAMPLE = 539
+ATS_BREAKEVEN = 0.5238
+
+# And here is *why*, which is more useful than the percentage.
+#
+# The model sides with the underdog 78.7% of the time. That is not a view about
+# underdogs; it is a property of its own arithmetic. Ratings are regressed hard
+# toward the mean - defence carries at only r = 0.12 year to year - so projected
+# margins come out compressed: a standard deviation of 4.18 points against the
+# market's 5.91, about 71% as far from a pick'em as the line is willing to go.
+# A number that is systematically closer to zero than the line will sit on the
+# dog almost every week by construction.
+#
+# So a spread pick here is mostly a reading of the model's own compression
+# rather than of the game, and taking the dog four games in five returns exactly
+# what that should: 48.4%. Scaling the margins up to match the market's spread
+# would remove the tell without adding any information - the ranking underneath
+# is unchanged - so it is not done.
+ATS_UNDERDOG_RATE = 0.787
+MODEL_MARGIN_SD = 4.18
+MARKET_MARGIN_SD = 5.91
+
+# Totals are a more interesting story and still not a green light. Overall the
+# model is 49.5% - nothing. But restricted to disagreements of two points or
+# more it is 55.7% over 255 games, and unlike the spread cuts that holds in both
+# held-out seasons (53.1% in 2024, 58.3% in 2025) rather than resting on one.
+#
+# It is still not established: z = +1.82 on its own, which is short of the 1.96
+# bar before accounting for the fifteen cuts tried to find it, and it is
+# concentrated in the first half of the season (60.5% through week 9, 51.8%
+# after). Worth watching for another season. Not worth banking on.
+TOTALS_ALL = 0.495
+TOTALS_EDGE2 = 0.557
+TOTALS_EDGE2_SAMPLE = 255
+TOTALS_MIN_EDGE = 2.0
+
 
 def _confidence(p: float) -> str:
     p = max(p, 1.0 - p)
@@ -209,6 +256,8 @@ def game_call(row: pd.Series, plan: dict | None, x_factors: dict | None,
         "market_spread": market,
         "reasons": reasons,
         "disagreement": disagreement,
+        "spread": spread_call(row),
+        "total": total_call(row),
         "headline": _headline(pick, other, win_prob, abs(float(row["model_margin"]))),
     }
 
@@ -329,6 +378,55 @@ def _player_adot(usage_hist: pd.DataFrame | None, player_id: str | None) -> floa
         return None
     d = usage_hist[usage_hist["player_id"] == player_id][col].dropna()
     return float(d.mean()) if len(d) else None
+
+
+def spread_call(row: pd.Series) -> dict | None:
+    """Which side of the posted number the model's own number takes.
+
+    Both figures are home-relative and positive when the home side is favoured,
+    so the difference between them is simply which way the model leans. Reported
+    in the notation a book uses - a side and a price - because that is the
+    question being asked, and reported alongside the fact that this is the one
+    thing the model was measured doing badly.
+    """
+    market = row.get("market_spread")
+    if market is None or market != market:
+        return None
+    market = float(market)
+    home, away = row["home"], row["away"]
+    edge = float(row["model_margin"]) - market
+
+    if edge > 0:                       # model likes the home side
+        side, line = home, -market
+    else:
+        side, line = away, market
+    return {
+        "side": side,
+        "side_name": TEAM_NAMES.get(side, side),
+        "line": line,
+        "label": f"{side} {line:+.1f}",
+        "edge_points": abs(edge),
+        "model_margin": float(row["model_margin"]),
+        "market_spread": market,
+    }
+
+
+def total_call(row: pd.Series) -> dict | None:
+    """Over or under the posted total, and by how much the model differs."""
+    market = row.get("market_total")
+    if market is None or market != market:
+        return None
+    market, model = float(market), float(row["model_total"])
+    edge = model - market
+    return {
+        "side": "Over" if edge > 0 else "Under",
+        "line": market,
+        "label": f"{'Over' if edge > 0 else 'Under'} {market:.1f}",
+        "edge_points": abs(edge),
+        "model_total": model,
+        # The only cut with anything behind it, and even that is unconfirmed.
+        "in_measured_band": abs(edge) >= TOTALS_MIN_EDGE,
+    }
 
 
 def slate_calls(slate: pd.DataFrame, plans: dict | None = None,

@@ -1429,3 +1429,68 @@ def test_player_read_says_nothing_it_cannot_measure():
     lines = coach.player_read("P", _G(), "DEN", None, None, None)
     assert len(lines) == 1 and "primary WR" in lines[0]
     assert coach.player_read("nobody", _G(), "DEN") == []
+
+
+# --------------------------------------------------------- spread and total
+def test_spread_side_is_named_the_way_a_book_would_write_it():
+    """spread_line is home-relative and positive when the home side is
+    favoured, so a home favourite lays the points and the dog takes them."""
+    # home favoured by 7, model has them by 10 -> take the home side laying 7
+    call = coach.spread_call(_slate_row(margin=10.0, spread=7.0))
+    assert call["side"] == "KC" and call["line"] == pytest.approx(-7.0)
+    assert call["label"] == "KC -7.0"
+    assert call["edge_points"] == pytest.approx(3.0)
+
+    # same line, model has the home side by only 2 -> take the dog getting 7
+    call = coach.spread_call(_slate_row(margin=2.0, spread=7.0))
+    assert call["side"] == "DEN" and call["line"] == pytest.approx(7.0)
+    assert call["label"] == "DEN +7.0"
+    assert call["edge_points"] == pytest.approx(5.0)
+
+    # away favoured by 3, model agrees -> take the away side laying 3
+    call = coach.spread_call(_slate_row(margin=-6.0, spread=-3.0))
+    assert call["side"] == "DEN" and call["line"] == pytest.approx(-3.0)
+
+    assert coach.spread_call(_slate_row(spread=None)) is None
+
+
+def test_the_measured_ats_record_is_carried_and_is_not_a_winning_one():
+    """539 held-out games at 48.2% against a 52.38% break-even. The number is
+    kept next to the feature so nobody can ship it as an edge."""
+    assert coach.ATS_RECORD < coach.ATS_BREAKEVEN
+    assert coach.ATS_SAMPLE > 500
+    # and the app has to say so
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "48.2%" in app, "the ATS record must be stated where the picks are"
+
+
+def test_total_side_and_the_one_band_with_anything_behind_it():
+    call = coach.total_call(_slate_row())          # model 44.0, no market total
+    assert call is None
+
+    row = _slate_row(); row["market_total"] = 41.0
+    call = coach.total_call(row)                   # model 44.0 vs 41.0
+    assert call["side"] == "Over" and call["edge_points"] == pytest.approx(3.0)
+    assert call["in_measured_band"] is True
+
+    row["market_total"] = 44.5
+    call = coach.total_call(row)
+    assert call["side"] == "Under"
+    assert call["in_measured_band"] is False       # half a point is not the band
+
+    # the band is a real measurement, but it is not yet significant
+    assert coach.TOTALS_EDGE2 > coach.ATS_BREAKEVEN
+    assert coach.TOTALS_ALL < coach.ATS_BREAKEVEN
+
+
+def test_the_underdog_lean_is_recorded_as_an_artifact_not_a_view():
+    """The model sides with the dog 78.7% of the time because its margins are
+    compressed (sd 4.18 against the market's 5.91), not because it has a view
+    about underdogs. That is the real explanation for the ATS record and it
+    belongs next to the picks."""
+    assert coach.ATS_UNDERDOG_RATE > 0.75
+    assert coach.MODEL_MARGIN_SD < coach.MARKET_MARGIN_SD
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "compressed" in app, "the reason for the dog lean must be shown"
