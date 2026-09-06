@@ -16,7 +16,7 @@ import streamlit as st
 import altair as alt
 
 from nflproj import (board, coverage as cvg, data as ndata, gamemodel as gm,
-                     defenders as dfn, gameplan as gp, joint as jnt, kicking as kk,
+                     coach, defenders as dfn, gameplan as gp, joint as jnt, kicking as kk,
                      leaderboard as lb, routes as rt,
                      lotto, news, parlay as play, picks, pipeline, playbook,
                      projections as pj, report, schemes, usage as um, venues as V)
@@ -318,13 +318,15 @@ def _ranked_bar(df: pd.DataFrame, value_col: str, label: str, n: int = 20):
 # =============================================================== PLAYERS
 with tab_players:
     st.subheader(f"Week {WEEK} projections")
-    c1, c2, c3 = st.columns([1.2, 1.6, 1])
+    c1, c2 = st.columns(2)
     group = c1.selectbox("Position", list(picks.POSITION_GROUPS), key="lb_grp")
     positions = picks.POSITION_GROUPS[group]
     stat_menu = lb.stats_for(positions)
     stat_label = c2.selectbox("Ranked by", [lab for _, lab in stat_menu], key="lb_stat")
     stat = dict((lab, k) for k, lab in stat_menu)[stat_label]
-    show_n = c3.slider("Players shown", 10, 60, 20, 5, key="lb_n")
+    # Twenty is the whole starting group at any position. A slider here only
+    # ever asked the reader to answer a question they did not have.
+    show_n = 20
 
     slate = slate_for(WEEK)
     table = lb.leaderboard(slate, positions, stat)
@@ -354,8 +356,6 @@ with tab_players:
 
         st.divider()
         st.markdown("#### One player, in detail")
-        st.caption("Everything above is already on screen — this is only for when "
-                   "you want the shape of a single player's range.")
         who = st.selectbox("Player", table["player"].head(int(show_n)).tolist(),
                            key="lb_player", label_visibility="collapsed")
         card = lb.player_card(slate, who)
@@ -366,6 +366,14 @@ with tab_players:
             m3.metric("Role", f"{card['meta'].get('position')}"
                               f"{int(card['meta'].get('depth_rank', 1))}")
             m4.metric("Active %", f"{card['meta'].get('p_active', 1) * 100:.0f}%")
+
+            # The coaching read: why the number is what it is, in the language a
+            # position coach would use rather than as another row of figures.
+            _g = card["game"]
+            _opp = _g.away if card["meta"].get("team") == _g.home else _g.home
+            for _line in coach.player_read(who, _g, _opp, getattr(ctx, "defenders", None),
+                                           _explosive_profile(), usage_hist):
+                st.markdown(f"- {_line}")
 
             d1, d2 = st.columns([1.3, 1])
             with d1:
@@ -412,17 +420,11 @@ with tab_picks:
                 "margin is heaviest and where the model's own error is "
                 "proportionally largest."
             )
-        c1, c2 = st.columns([2, 1])
-        band = c1.select_slider(
-            "How confident", options=["Wide", "Standard", "Only the strongest"],
-            value="Standard", key="bp_band",
-            help="Standard is 60–90% — the range where a model's edge is usable.")
-        bands = {"Wide": (0.55, 0.95), "Standard": (0.60, 0.90),
-                 "Only the strongest": (0.72, 0.90)}
-        lo, hi = bands[band]
-        top_n = c2.slider("Show", 10, 60, 25, 5, key="bp_n")
-
-        bp = picks.best_picks(slate, min_prob=lo, max_prob=hi, top_n=int(top_n))
+        # 60-90% is the band where a model's edge is usable: below it there is
+        # nothing worth saying, above it a book's margin is heaviest and the
+        # model's own error is proportionally largest. No reason to make anyone
+        # choose that.
+        bp = picks.best_picks(slate, min_prob=0.60, max_prob=0.90, top_n=25)
         if bp.empty:
             st.info("Nothing in that band this week. Widen it.")
         else:
@@ -484,14 +486,11 @@ with tab_picks:
                 "is no fitted curve for them and the passing projection underneath "
                 "only just matches a trivial baseline."
             )
-        l1, l2 = st.columns(2)
-        lt_min_p = l1.slider("Minimum chance", 0.03, 0.25, 0.05, 0.01, key="lt_minp",
-                             help="Below about 3% a longshot is a raffle ticket.")
-        lt_n = l2.slider("Show", 10, 60, 25, 5, key="lt_n")
-
+        # Below about 5% a longshot stops being a bet and becomes a raffle
+        # ticket, so that is the floor rather than a dial.
         lt_board = lotto.lotto_board(slate, explosive=_explosive_profile(), top_n=200)
         if not lt_board.empty:
-            lt_board = lt_board[lt_board["p_model"] >= lt_min_p].head(int(lt_n))
+            lt_board = lt_board[lt_board["p_model"] >= 0.05].head(25)
         if lt_board.empty:
             st.info("Nothing clears that floor this week. Lower it.")
         else:
@@ -547,18 +546,16 @@ with tab_picks:
 # ================================================================ PARLAY
 with tab_parlay:
     st.subheader(f"Week {WEEK} parlay")
-    g1, g2, g3, g4 = st.columns([1, 1.2, 1.4, 1])
+    g1, g2, g3 = st.columns([1, 1.6, 1.2])
     n_legs = g1.selectbox("Legs", [2, 3, 4, 5], index=1, key="pg_legs")
     style = g2.selectbox("Style", list(play.STYLES), index=1, key="pg_style",
                          help="Safer legs hit more often and pay less. Longshot "
                               "legs are the other way round.")
-    stack = g3.selectbox("Shape", ["Same-team stack", "Spread across games"],
-                         key="pg_shape",
-                         help="A stack leans on legs helping each other; spreading "
-                              "across games lowers variance instead.")
-    g4.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
-    go = g4.button("🎲 Generate", type="primary", width="stretch",
-                   key="pg_go")
+    g3.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+    go = g3.button("🎲 Generate", type="primary", width="stretch", key="pg_go")
+    # Same-team stacks are the whole point - correlation lives inside one
+    # offence - so it is the behaviour rather than a question.
+    stack = "Same-team stack"
 
     if "pg_seed" not in st.session_state:
         st.session_state.pg_seed = 0
@@ -678,65 +675,109 @@ with tab_parlay:
 
 
 # ================================================================= GAMES
-with tab_games:
-    st.subheader(f"Week {WEEK} game predictions")
-    with st.expander("The closing line beats this model — read before betting it"):
-        st.markdown(
-            "Over 544 held-out games it predicts margin to 10.3 points against the "
-            "market's 9.7, and picks 64.7% of winners against the market's 68.4%. "
-            "Betting its disagreements **lost money** in backtest: 48.7% against the "
-            "spread, below the 52.4% break-even.\n\n"
-            "Treat a large edge as a flag that the model is missing something — "
-            "usually injury or personnel news — rather than as a signal. It is an "
-            "independent second opinion, formed from opponent-adjusted EPA rather "
-            "than from the market, which is what makes it worth having at all."
-        )
+@st.cache_resource(max_entries=1, show_spinner="Working up the slate…")
+def _week_calls(week: int):
+    """The staff's call on every game, with the football reason behind it."""
     gslate = gm.predict_slate(ctx.games, PROJECTION_SEASON, team_proj, scoring,
-                              week=WEEK, n_sims=20000)
+                              week=int(week), n_sims=10000)
     if gslate.empty:
+        return gslate, []
+    gcs = board.game_contexts(ctx.games, PROJECTION_SEASON, int(week))
+    envs = board.game_environments(ctx.games, PROJECTION_SEASON, int(week))
+    plans, xfs = {}, {}
+    for r in gslate.itertuples():
+        key = (r.away, r.home)
+        try:
+            plans[key] = gp.weekly_plan(r.home, r.away, ctx, pm, cov_plays,
+                                        lg_off, lg_def, seasons=(anchor,))
+        except Exception:
+            plans[key] = None
+        side = {}
+        for t in (r.away, r.home):
+            if t not in gcs:
+                continue
+            try:
+                # Only the top name is ever read back, so asking for two was
+                # paying twice for a player nobody sees.
+                d = gp.x_factors(t, gcs[t].opponent, ctx, pm, usage_hist, sampler,
+                                 gcs[t], lg_def, env=envs.get(t), n_sims=2500, top_n=1)
+                side[t] = [] if d.empty else d.to_dict("records")
+            except Exception:
+                side[t] = []
+        xfs[key] = side
+    return gslate, coach.slate_calls(gslate, plans, xfs, team_proj)
+
+
+with tab_games:
+    st.subheader(f"Week {WEEK} — the calls")
+    st.caption("Who wins, and the football reason why. Most confident first.")
+
+    gslate, calls = _week_calls(WEEK)
+    if not calls:
         st.info("No games scheduled for this week.")
     else:
-        show = gslate.rename(columns={
-            "away": "Away", "home": "Home", "away_pts": "Away pts",
-            "home_pts": "Home pts", "model_margin": "Margin", "model_total": "Total",
-            "home_win_pct": "Home win %", "market_spread": "Mkt spread",
-            "market_total": "Mkt total", "spread_edge": "Spread edge",
-            "total_edge": "Total edge", "env_pts": "Env pts", "divisional": "Div",
-            "roof": "Roof", "travel_miles": "Away miles", "tz_shift": "TZ"})
-        st.dataframe(
-            show.drop(columns=["week", "game_id"]), hide_index=True,
-            width="stretch",
-            column_config={"Home win %": st.column_config.NumberColumn(format="%.1f%%")})
-        with st.expander("What these columns mean"):
+        for c in calls:
+            icon = {"strong": "🟢", "lean": "🟡", "coin flip": "⚪"}[c["confidence"]]
+            with st.container(border=True):
+                st.markdown(f"### {icon} {c['headline']}")
+                for reason in c["reasons"]:
+                    st.markdown(f"- {reason}")
+                if c["disagreement"]:
+                    st.caption(f"⚠️ {c['disagreement']}")
+
+        with st.expander("How much to trust these"):
             st.markdown(
-                "**Margin** is home-relative — positive means the home side wins by "
-                "that much.\n\n"
-                "**Edge** is the model minus the market. A positive spread edge means "
-                "the model likes the home side more than the market does.\n\n"
-                "**Env pts** is the scoring-environment adjustment applied to the "
-                "total from roof, wind and divisional status.\n\n"
-                "**Away miles** and **TZ** are shown for context and are deliberately "
-                "**not** applied. Travel was tested against 7,276 games: the "
-                "east-to-west effect was worth -2.8 points against the spread in "
-                "1999-2009 and has since decayed to zero.\n\n"
-                "Blank market columns mean no line is posted for that game yet."
+                "**The closing line beats this model at picking winners** — 68.4% "
+                "against 64.7% over 544 held-out games — and betting its "
+                "disagreements lost money in backtest (48.7% against the spread, "
+                "below the 52.4% break-even).\n\n"
+                "So the value here is not the side, it is the *reasoning*: which "
+                "structural collision decides the game and which player can take it "
+                "somewhere the projection will not. Where the model and the market "
+                "disagree, read it as a question to answer — usually injury or "
+                "personnel news the model has not seen — rather than as an edge.\n\n"
+                "Every reason shown is derived from a measurement: opponent-adjusted "
+                "EPA, charted coverage rates, scheme fingerprints, or the simulated "
+                "ceiling of a player's range. Nothing here is a story written to fit "
+                "the pick."
             )
 
-    st.markdown(f"#### Projected {PROJECTION_SEASON} team strength")
-    tp = team_proj.copy()
-    tp["net"] = tp["off_rating"] + tp["def_rating"]
-    tp = tp.sort_values("net", ascending=False)
-    tp["new staff"] = tp["team"].map(lambda t: not ctx.staffs[t].continuity)
-    st.dataframe(
-        tp.rename(columns={"team": "Team", "off_rating": "Offense",
-                           "def_rating": "Defense", "net": "Net"}).round(4),
-        hide_index=True, width="stretch")
-    st.caption(
-        "Opponent-adjusted EPA per play, regressed toward the mean. Offense carries "
-        "year to year at r = 0.44 and defense at only r = 0.12, so defensive ratings "
-        "are pulled far harder toward average — a defence is close to a coin flip "
-        "from one season to the next. Teams with a new play caller are shrunk further."
-    )
+        with st.expander("The numbers behind them"):
+            show = gslate.rename(columns={
+                "away": "Away", "home": "Home", "model_margin": "Margin",
+                "model_total": "Total", "home_win_pct": "Home win %",
+                "market_spread": "Mkt spread", "market_total": "Mkt total",
+                "spread_edge": "Spread edge", "env_pts": "Env pts",
+                "divisional": "Div", "roof": "Roof"})
+            keep = [c for c in ["Away", "Home", "Margin", "Total", "Home win %",
+                                "Mkt spread", "Mkt total", "Spread edge", "Env pts",
+                                "Div", "Roof"] if c in show.columns]
+            st.dataframe(show[keep], hide_index=True, width="stretch",
+                         column_config={"Home win %":
+                                        st.column_config.NumberColumn(format="%.1f%%")})
+            st.caption(
+                "Margin and spread are both home-relative and positive when the home "
+                "side is favoured. **Env pts** is the scoring adjustment from roof, "
+                "wind and divisional status. Travel and time zones are measured but "
+                "deliberately not applied — the effect decayed to zero after 2009."
+            )
+
+        with st.expander(f"Projected {PROJECTION_SEASON} team strength"):
+            tp = team_proj.copy()
+            tp["net"] = tp["off_rating"] + tp["def_rating"]
+            tp = tp.sort_values("net", ascending=False)
+            tp["new staff"] = tp["team"].map(lambda t: not ctx.staffs[t].continuity)
+            st.dataframe(
+                tp.rename(columns={"team": "Team", "off_rating": "Offense",
+                                   "def_rating": "Defense", "net": "Net"}).round(4),
+                hide_index=True, width="stretch")
+            st.caption(
+                "Opponent-adjusted EPA per play, regressed toward the mean. Offense "
+                "carries year to year at r = 0.44 and defense at only r = 0.12, so "
+                "defensive ratings are pulled far harder toward average. Teams with a "
+                "new play caller are shrunk further, which is why most Week 1 gaps "
+                "are small."
+            )
 
 
 # ============================================================= DEEP DIVE

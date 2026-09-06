@@ -12,8 +12,8 @@ import pandas as pd
 import pytest
 
 from nflproj import availability as av
-from nflproj import (blocking, coaches, defenders, lotto, personnel, playbook,
-                     projections as pj, routes, schemes, usage as um)
+from nflproj import (blocking, coach, coaches, defenders, lotto, personnel,
+                     playbook, projections as pj, routes, schemes, usage as um)
 
 
 # --------------------------------------------------------------------- rates
@@ -1321,3 +1321,111 @@ def test_a_download_never_half_writes_its_destination(tmp_path, monkeypatch):
     assert ndata._download("http://example/x.parquet", dest) is False
     assert not dest.exists(), "a rejected body must not be left on disk"
     assert not list(tmp_path.glob("*.part*")), "temporary file was not cleaned up"
+
+
+# ------------------------------------------------------------- coaching calls
+def _slate_row(home="KC", away="DEN", home_win_pct=59.5, margin=2.0, spread=None):
+    return pd.Series({"home": home, "away": away, "home_win_pct": home_win_pct,
+                      "model_margin": margin, "model_total": 44.0,
+                      "market_spread": spread, "env_pts": 0.0, "wind": None,
+                      "roof": "outdoors", "divisional": False})
+
+
+def test_market_favourite_is_read_from_the_right_side_of_the_spread():
+    """nflverse spread_line is home-relative and POSITIVE when the home team is
+    favoured: over 2025 it correlates +0.50 with the actual home margin, and
+    home sides average +6.9 when it is positive against -4.6 when negative.
+    Reading it backwards made all sixteen games look like the model disagreed
+    with the market."""
+    # market has the home team favoured by 7, and so does the model
+    call = coach.game_call(_slate_row(home_win_pct=70.0, margin=7.0, spread=7.0),
+                           None, None, None)
+    assert call["pick"] == "KC"
+    assert call["disagreement"] is None, "agreement was reported as a disagreement"
+
+    # market has the away team favoured; the model still likes the home side
+    call = coach.game_call(_slate_row(home_win_pct=70.0, margin=7.0, spread=-7.0),
+                           None, None, None)
+    assert call["pick"] == "KC"
+    assert call["disagreement"] is not None
+    assert "Denver" in call["disagreement"]
+
+
+def test_a_call_states_its_own_view_but_the_honest_limit_is_still_told_once():
+    """The calls are the model's own and say so plainly rather than deferring to
+    the price on every game. The real limit - the closing line picks winners
+    better - is not deleted, it is stated once where a reader will see it."""
+    call = coach.game_call(_slate_row(home_win_pct=70.0, margin=7.0, spread=-7.0),
+                           None, None, None)
+    # the disagreement is surfaced, not hedged away and not hidden
+    assert call["disagreement"] is not None
+    assert "off the board" in call["disagreement"]
+    assert "better forecaster" not in call["disagreement"], \
+        "the market caveat should not be stapled to every game"
+
+    # and the measured limit is still carried honestly in the module
+    assert coach.MARKET_WINNER_ACCURACY > coach.MODEL_WINNER_ACCURACY
+
+    # surfaced exactly once in the app, not per game
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert app.count("64.7%") == 1, "the accuracy figure should appear once"
+    assert "68.4%" in app
+
+
+def test_a_negligible_rating_gap_is_not_dressed_up_as_a_separation():
+    ratings = pd.DataFrame([{"team": "KC", "off_rating": 0.010, "def_rating": 0.004},
+                            {"team": "DEN", "off_rating": 0.000, "def_rating": 0.000}])
+    call = coach.game_call(_slate_row(), None, None, ratings)
+    assert not any("separation" in r for r in call["reasons"])
+
+    ratings.loc[0, "off_rating"] = 0.120        # a real gap
+    call = coach.game_call(_slate_row(), None, None, ratings)
+    assert any("separation" in r for r in call["reasons"])
+
+
+def test_a_close_game_is_called_a_coin_flip():
+    assert coach._confidence(0.51) == "coin flip"
+    assert coach._confidence(0.60) == "lean"
+    assert coach._confidence(0.72) == "strong"
+    # and the headline says so rather than sounding certain
+    call = coach.game_call(_slate_row(home_win_pct=50.8, margin=0.3), None, None, None)
+    assert "coin flip" in call["headline"]
+
+
+def test_reasons_are_trimmed_to_what_a_staff_would_actually_say():
+    plan = {"home_offense": {"offense": "KC", "defense": "DEN",
+                             "collisions": [{"axis": f"axis{i}", "edge": f"edge{i}",
+                                             "favours": "KC"} for i in range(6)],
+                             "coverage": [f"note{i}" for i in range(6)]}}
+    call = coach.game_call(_slate_row(), plan, None, None)
+    assert len(call["reasons"]) <= coach.MAX_REASONS
+    assert len(call["reasons"]) == len(set(call["reasons"])), "duplicated reasons"
+
+
+def test_player_read_finds_depth_of_target_under_its_real_column_name():
+    """player_usage calls it rec_adot. Looking for "adot" meant the depth
+    matchup - the most useful sentence in the read - never fired at all."""
+    hist = pd.DataFrame([{"player_id": "x", "rec_adot": 12.4},
+                         {"player_id": "x", "rec_adot": 11.6}])
+    assert coach._player_adot(hist, "x") == pytest.approx(12.0)
+    assert coach._player_adot(pd.DataFrame(), "x") is None
+    assert coach._player_adot(hist, None) is None
+    assert coach._player_adot(pd.DataFrame([{"player_id": "x"}]), "x") is None
+
+
+def test_player_read_says_nothing_it_cannot_measure():
+    """Missing layers are left out rather than guessed at."""
+    class _G:
+        meta = {"P": {"position": "WR", "depth_rank": 1, "team": "KC",
+                      "p_active": 0.97, "player_id": "x"}}
+
+        def stat(self, player, stat):
+            return np.full(500, 60.0) if stat == "rec_yards" else None
+
+        def active_mask(self, *a):
+            return np.ones(500, dtype=bool)
+
+    lines = coach.player_read("P", _G(), "DEN", None, None, None)
+    assert len(lines) == 1 and "primary WR" in lines[0]
+    assert coach.player_read("nobody", _G(), "DEN") == []
