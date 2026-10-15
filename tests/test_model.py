@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from nflproj import availability as av
-from nflproj import (blocking, coach, coaches, defenders, lotto, personnel,
+from nflproj import (blocking, coach, coaches, defenders, lotto, odds, personnel,
                      playbook, projections as pj, routes, schemes, usage as um)
 
 
@@ -1511,3 +1511,222 @@ def test_the_underdog_lean_is_recorded_as_an_artifact_not_a_view():
     from pathlib import Path
     app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
     assert "compressed" in app, "the reason for the dog lean must be shown"
+
+
+# ---------------------------------------------------------------- book odds
+def _roster():
+    return pd.DataFrame([
+        {"player": "Kenneth Walker III", "team": "KC"},
+        {"player": "Puka Nacua", "team": "LA"},
+        {"player": "Marvin Harrison Jr.", "team": "ARI"},
+        {"player": "Michael Carter", "team": "ARI"},
+        {"player": "Michael Carter II", "team": "NYJ"},
+        {"player": "D'Andre Swift", "team": "CHI"},
+    ])
+
+
+def test_names_reduce_to_what_two_sources_can_agree_on():
+    n = odds.normalize_name
+    assert n("Kenneth Walker III") == n("Kenneth Walker") == "kenneth walker"
+    assert n("Marvin Harrison Jr.") == n("marvin  harrison") == "marvin harrison"
+    assert n("D'Andre Swift") == n("DAndre Swift") == "dandre swift"
+    assert n("A.J. Brown") == "aj brown"
+    assert n(None) == "" and n(12) == ""
+
+
+def test_a_suffix_difference_still_matches_the_right_player():
+    """A book prints "Kenneth Walker", the roster says "Kenneth Walker III"."""
+    book = pd.DataFrame([{"player": "Kenneth Walker", "team": "KC",
+                          "market": "rush_yards", "line": 58.5,
+                          "over_odds": -115, "under_odds": -105}])
+    m, rej = odds.match_players(odds._finalize(book), _roster())
+    assert len(m) == 1 and rej.empty
+    assert m.iloc[0]["model_player"] == "Kenneth Walker III"
+
+
+def test_an_ambiguous_name_is_refused_rather_than_guessed():
+    """Two Michael Carters. Attaching a price to the wrong one is worse than
+    attaching none, because it looks like it worked."""
+    book = pd.DataFrame([{"player": "Michael Carter", "team": None,
+                          "market": "rush_yards", "line": 30.5,
+                          "over_odds": -110, "under_odds": -110}])
+    m, rej = odds.match_players(odds._finalize(book), _roster())
+    assert m.empty, "an ambiguous name must not be matched"
+    assert len(rej) == 1 and "ambiguous" in rej.iloc[0]["reason"]
+
+    # with a team supplied it is no longer ambiguous
+    book["team"] = "NYJ"
+    m, rej = odds.match_players(odds._finalize(book), _roster())
+    assert len(m) == 1 and m.iloc[0]["model_player"] == "Michael Carter II"
+
+
+def test_an_unknown_player_is_reported_not_dropped():
+    book = pd.DataFrame([{"player": "Nobody Here", "team": "KC",
+                          "market": "rush_yards", "line": 10.5,
+                          "over_odds": -110, "under_odds": -110}])
+    m, rej = odds.match_players(odds._finalize(book), _roster())
+    assert m.empty and len(rej) == 1
+    assert "no roster entry" in rej.iloc[0]["reason"]
+
+
+def test_book_market_names_map_onto_the_model_statistics():
+    raw = pd.DataFrame([
+        {"player": "Puka Nacua", "team": "LA", "market": "player_reception_yds",
+         "line": 72.5, "over_odds": -112, "under_odds": -108},
+        {"player": "Puka Nacua", "team": "LA", "market": "Receiving Yards",
+         "line": 72.5, "over_odds": -112, "under_odds": -108},
+    ])
+    out = odds._finalize(raw, book="test")
+    assert set(out["market"]) == {"rec_yards"}
+    assert list(out.columns) == odds.ODDS_COLUMNS
+    assert out["book"].eq("test").all()
+
+
+def test_a_row_with_no_price_at_all_is_dropped():
+    raw = pd.DataFrame([{"player": "Puka Nacua", "market": "rec_yards",
+                         "line": 72.5, "over_odds": None, "under_odds": None}])
+    assert odds._finalize(raw).empty
+
+
+def test_the_odds_api_shape_is_flattened_without_a_network_call():
+    payload = [[{
+        "home_team": "Kansas City Chiefs", "away_team": "Los Angeles Chargers",
+        "bookmakers": [{"title": "DraftKings", "last_update": "2026-10-15T12:00:00Z",
+            "markets": [{"key": "player_rush_yds", "outcomes": [
+                {"description": "Kenneth Walker III", "name": "Over",  "point": 58.5, "price": -115},
+                {"description": "Kenneth Walker III", "name": "Under", "point": 58.5, "price": -105},
+            ]}]}]}]]
+    out = odds.parse_the_odds_api([p for grp in payload for p in grp])
+    assert len(out) == 1
+    r = out.iloc[0]
+    assert r["market"] == "rush_yards" and r["line"] == 58.5
+    assert r["over_odds"] == -115 and r["under_odds"] == -105
+    assert r["book"] == "DraftKings"
+
+
+def test_pricing_turns_a_probability_into_expected_value():
+    board = pd.DataFrame([{"player": "Puka Nacua", "stat": "rec_yards",
+                           "line": 72.5, "side": "Over", "probability": 0.62}])
+    book = odds._finalize(pd.DataFrame([{"player": "Puka Nacua", "team": "LA",
+        "market": "rec_yards", "line": 72.5, "over_odds": 120, "under_odds": -145}]))
+    priced = odds.price_board(board, book)
+    r = priced.iloc[0]
+    assert r["price"] == 120
+    # 62% at +120 is clearly positive
+    assert r["ev_per_100"] > 0
+    assert r["prob_edge"] == pytest.approx(0.62 - 100 / 220)
+    assert r["kelly"] > 0
+
+
+def test_a_line_that_does_not_match_exactly_is_left_unpriced():
+    """Shading a price across half a point is how a 2% edge gets invented."""
+    board = pd.DataFrame([{"player": "Puka Nacua", "stat": "rec_yards",
+                           "line": 72.5, "side": "Over", "probability": 0.62}])
+    book = odds._finalize(pd.DataFrame([{"player": "Puka Nacua", "team": "LA",
+        "market": "rec_yards", "line": 74.5, "over_odds": 120, "under_odds": -145}]))
+    priced = odds.price_board(board, book)
+    assert pd.isna(priced.iloc[0]["price"])
+    assert pd.isna(priced.iloc[0]["ev_per_100"])
+
+
+def test_the_under_side_is_priced_from_the_under_number():
+    board = pd.DataFrame([{"player": "Puka Nacua", "stat": "rec_yards",
+                           "line": 72.5, "side": "Under", "probability": 0.70}])
+    book = odds._finalize(pd.DataFrame([{"player": "Puka Nacua", "team": "LA",
+        "market": "rec_yards", "line": 72.5, "over_odds": 120, "under_odds": -145}]))
+    assert odds.price_board(board, book).iloc[0]["price"] == -145
+
+
+def test_the_suggested_stake_is_capped_below_full_kelly():
+    board = pd.DataFrame([{"player": "Puka Nacua", "stat": "rec_yards",
+                           "line": 72.5, "side": "Over", "probability": 0.90}])
+    book = odds._finalize(pd.DataFrame([{"player": "Puka Nacua", "team": "LA",
+        "market": "rec_yards", "line": 72.5, "over_odds": 150, "under_odds": -200}]))
+    best = odds.best_value(odds.price_board(board, book))
+    assert len(best) == 1
+    assert best.iloc[0]["kelly"] > 0.05               # full Kelly is large here
+    assert best.iloc[0]["suggested_stake_pct"] <= 5.0  # and the cap holds
+
+
+def test_a_live_fetch_without_a_key_returns_empty_rather_than_raising(monkeypatch):
+    monkeypatch.delenv("ODDS_API_KEY", raising=False)
+    out = odds.fetch_the_odds_api()
+    assert out.empty and list(out.columns) == odds.ODDS_COLUMNS
+
+
+class _PricedGame:
+    """A one-player game with a known right-skewed receiving distribution."""
+    away, home = "DEN", "KC"
+
+    def __init__(self, seed=0):
+        rng = np.random.default_rng(seed)
+        self._v = rng.gamma(2.0, 30.0, 8000)        # mean ~60, median well below
+        self.players = {"Travis Kelce": None}
+        self.meta = {"Travis Kelce": {"position": "TE", "team": "KC",
+                                      "depth_rank": 1, "p_active": 0.95,
+                                      "player_id": "x"}}
+
+    def stat(self, player, stat):
+        return self._v if (player == "Travis Kelce" and stat == "rec_yards") else None
+
+    def active_mask(self, *a):
+        return np.ones(len(self._v), dtype=bool)
+
+
+def test_value_board_asks_the_simulation_about_the_books_line():
+    """The first design priced the model's own generated lines and matched zero
+    rows out of two hundred, because the two almost never coincide."""
+    matched = pd.DataFrame([{"model_player": "Travis Kelce", "market": "rec_yards",
+                             "line": 54.5, "over_odds": 120, "under_odds": -145,
+                             "book": "FanDuel"}])
+    g = _PricedGame()
+    v = odds.value_board([g], matched)
+    assert len(v) == 2, "both sides of the market should be costed"
+    over = v[v.side == "Over"].iloc[0]
+    under = v[v.side == "Under"].iloc[0]
+    assert over["line"] == 54.5 and over["price"] == 120
+    assert under["price"] == -145
+    # the two sides are complementary
+    assert over["probability"] + under["probability"] == pytest.approx(1.0)
+    # and the probability is the simulation's answer at exactly that number
+    assert over["probability"] == pytest.approx((g._v > 54.5).mean())
+
+
+def test_value_board_leaves_out_near_certainties():
+    """Where the model's own error is proportionally largest."""
+    matched = pd.DataFrame([{"model_player": "Travis Kelce", "market": "rec_yards",
+                             "line": 0.5, "over_odds": -5000, "under_odds": 2000}])
+    v = odds.value_board([_PricedGame()], matched, min_prob=0.02)
+    assert v.empty, "a 99%+ side should not be offered"
+
+
+def test_value_board_survives_a_player_the_slate_never_simulated():
+    matched = pd.DataFrame([{"model_player": "Ghost Player", "market": "rec_yards",
+                             "line": 40.5, "over_odds": -110, "under_odds": -110}])
+    assert odds.value_board([_PricedGame()], matched).empty
+    assert odds.value_board([], matched).empty
+    assert odds.value_board([_PricedGame()], pd.DataFrame()).empty
+
+
+def test_right_skew_means_a_big_projection_is_not_a_big_over_probability():
+    """Yardage distributions are right-skewed, so the mean sits above the
+    median and a line below the projection can still be near a coin flip.
+    Worth pinning: it looks like a bug the first time you see it."""
+    g = _PricedGame()
+    mean = float(np.mean(g._v))
+    matched = pd.DataFrame([{"model_player": "Travis Kelce", "market": "rec_yards",
+                             "line": round(mean * 0.85, 1) + 0.5,
+                             "over_odds": -110, "under_odds": -110}])
+    over = odds.value_board([g], matched).query("side == 'Over'").iloc[0]
+    assert over["line"] < over["projection"]
+    assert over["probability"] < 0.62, "skew should keep this near a coin flip"
+
+
+def test_the_app_defaults_to_the_next_unplayed_week():
+    """Defaulting to week 1 is right in August and wrong from September on:
+    it serves a board settled weeks ago and every number on it looks current."""
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "_next_week" in app
+    assert 'index=0, key="global_week"' not in app, \
+        "the week selector must not be pinned to the first week of the season"

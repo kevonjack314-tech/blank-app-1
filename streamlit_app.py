@@ -9,6 +9,8 @@ is available without being in the way.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -17,7 +19,7 @@ import altair as alt
 
 from nflproj import (board, coverage as cvg, data as ndata, gamemodel as gm,
                      coach, defenders as dfn, gameplan as gp, joint as jnt, kicking as kk,
-                     leaderboard as lb, routes as rt,
+                     leaderboard as lb, odds, routes as rt,
                      lotto, news, parlay as play, picks, pipeline, playbook,
                      projections as pj, report, schemes, usage as um, venues as V)
 
@@ -177,10 +179,30 @@ st.caption(
 
 WEEKS = sorted(board.schedule_for(ctx.games, PROJECTION_SEASON)["week"].unique())
 
+
+def _next_week() -> int:
+    """The first week that has not finished, which is the one anyone wants.
+
+    Defaulting to week 1 is right in August and wrong from September onward:
+    once the season is running it silently serves a board that was settled
+    weeks ago, and every number on it looks current.
+    """
+    sched = ctx.games[(ctx.games["season"] == PROJECTION_SEASON)
+                      & (ctx.games["game_type"] == "REG")]
+    unplayed = sched[sched["home_score"].isna()]
+    if unplayed.empty:
+        return int(max(WEEKS))
+    return int(unplayed["week"].min())
+
+
 # One week selector for the whole app, so changing the week does not mean
 # changing it again in every tab.
-_wsel = st.sidebar.selectbox("Week", WEEKS, index=0, key="global_week",
-                             help="Applies to every tab.")
+_default_week = _next_week()
+_wsel = st.sidebar.selectbox(
+    "Week", WEEKS,
+    index=WEEKS.index(_default_week) if _default_week in WEEKS else 0,
+    key="global_week", help="Applies to every tab. Defaults to the next week "
+                            "that has not been played.")
 WEEK = int(_wsel)
 
 (tab_players, tab_picks, tab_parlay, tab_games, tab_deep, tab_learn) = st.tabs(
@@ -402,10 +424,61 @@ with tab_players:
 
 
 # ================================================================= PICKS
+@st.cache_resource(max_entries=1, show_spinner="Reading prices…")
+def _load_odds(payload: bytes | None, name: str | None):
+    """Book prices, from an uploaded file or a live key if one is set."""
+    if payload:
+        # The loader dispatches on the suffix, so keep the uploaded one.
+        src = Path(name or "upload.csv")
+        tmp = pipeline.ROOT / f".odds_upload{src.suffix or '.csv'}"
+        tmp.write_bytes(payload)
+        try:
+            return odds.load_file(tmp, book=src.stem)
+        finally:
+            tmp.unlink(missing_ok=True)
+    return odds.fetch_the_odds_api()
+
+
 with tab_picks:
     mode = st.radio("Show", ["Best picks", "Lotto plays"], horizontal=True,
                     key="pk_mode", label_visibility="collapsed")
     slate = slate_for(WEEK)
+
+    # Prices turn "what the model is sure of" into "what is worth betting".
+    # The file route always works; the API needs ODDS_API_KEY in the
+    # environment and outbound access to the provider.
+    with st.expander("💰 Add book prices (optional) — turns confidence into value"):
+        up = st.file_uploader("Odds file (CSV, TSV or JSON)",
+                              type=["csv", "tsv", "json"], key="odds_up",
+                              help="Any export with player, market, line and "
+                                   "over/under prices. Column names are matched "
+                                   "loosely.")
+        st.caption(
+            "Without prices this board ranks **confidence**, which is not value — "
+            "a 90% leg at -1200 still loses money. With them it ranks **expected "
+            "value** and suggests a stake. A live feed is used automatically if "
+            "`ODDS_API_KEY` is set and the provider is reachable."
+        )
+    _book = _load_odds(up.getvalue() if up else None, up.name if up else None)
+
+    _roster = pd.concat([g.roster() for g in slate], ignore_index=True) if slate else pd.DataFrame()
+    _matched, _rejected = (odds.match_players(_book, _roster)
+                           if not _book.empty else (pd.DataFrame(), pd.DataFrame()))
+    if not _book.empty:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Prices loaded", f"{len(_book):,}")
+        c2.metric("Matched to players", f"{len(_matched):,}")
+        c3.metric("Unmatched", f"{len(_rejected):,}")
+        if len(_rejected):
+            with st.expander(f"Why {len(_rejected)} rows did not match"):
+                st.caption(
+                    "Reported rather than dropped quietly: a matcher that loses a "
+                    "third of the board looks identical to one that works. An "
+                    "ambiguous name is refused on purpose — a price on the wrong "
+                    "player is worse than no price, because it looks like it worked."
+                )
+                st.dataframe(_rejected[["player", "team", "market", "line", "reason"]]
+                             .head(40), hide_index=True, width="stretch")
 
     if mode == "Best picks":
         st.subheader(f"Week {WEEK} — what the model is most sure of")
@@ -440,7 +513,45 @@ with tab_picks:
                          hide_index=True, width="stretch")
             _glossary("Model %", "Fair odds", "Projection", "Active %")
 
-            st.markdown("#### Price one")
+            if not _matched.empty:
+                # The book sets the line; the simulation only answers at it.
+                # Pricing the model's own generated lines matched nothing -
+                # they almost never coincide - and shading across half a point
+                # would invent the edge it was looking for.
+                value = odds.best_value(odds.value_board(slate, _matched))
+                st.markdown("#### Priced against the book")
+                if value.empty:
+                    st.info(
+                        "No positive expected value on this board at these prices. "
+                        "That is the normal result — a book's margin is there "
+                        "precisely to make it so, and a model finding edges every "
+                        "week is usually finding its own errors."
+                    )
+                else:
+                    v = value.rename(columns={
+                        "player": "Player", "market": "Market", "line": "Line",
+                        "side": "Side", "probability": "Model %", "price": "Price",
+                        "projection": "Projection", "ev_per_100": "EV per 100",
+                        "prob_edge": "Edge", "suggested_stake_pct": "Stake %",
+                        "book": "Book"})
+                    v["Model %"] = v["Model %"] * 100
+                    v["Edge"] = v["Edge"] * 100
+                    st.dataframe(
+                        v[["Player", "Market", "Side", "Line", "Projection",
+                           "Model %", "Price", "Edge", "EV per 100", "Stake %",
+                           "Book"]].round(1),
+                        hide_index=True, width="stretch")
+                    st.caption(
+                        "**Edge** is the model's probability minus the price's "
+                        "implied one, in points. **Stake %** is Kelly capped at 5% "
+                        "of bankroll — full Kelly on a projection this accurate is "
+                        "a fast way to find out how wrong it is. The model's own "
+                        "calibration is the ceiling on all of this: a positive "
+                        "number computed on a projection that is 10% off is "
+                        "positive in a spreadsheet only."
+                    )
+
+            st.markdown("#### Price one by hand")
             pc1, pc2, pc3 = st.columns([3, 1, 1])
             idx = pc1.selectbox(
                 "Pick", range(len(bp)),
