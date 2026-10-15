@@ -84,18 +84,44 @@ ATS_UNDERDOG_RATE = 0.787
 MODEL_MARGIN_SD = 4.18
 MARKET_MARGIN_SD = 5.91
 
-# Totals are a more interesting story and still not a green light. Overall the
-# model is 49.5% - nothing. But restricted to disagreements of two points or
-# more it is 55.7% over 255 games, and unlike the spread cuts that holds in both
-# held-out seasons (53.1% in 2024, 58.3% in 2025) rather than resting on one.
+# Live 2026, weeks 1-5: 79 games projected from only what preceded them. The
+# first real out-of-sample run, and it is not flattering.
 #
-# It is still not established: z = +1.82 on its own, which is short of the 1.96
-# bar before accounting for the fifteen cuts tried to find it, and it is
-# concentrated in the first half of the season (60.5% through week 9, 51.8%
-# after). Worth watching for another season. Not worth banking on.
-TOTALS_ALL = 0.495
-TOTALS_EDGE2 = 0.557
-TOTALS_EDGE2_SAMPLE = 255
+#   straight up   53.8% (42-36)   the closing line went 64.1% on the same games
+#   against spread 54.8% (40-33)  above break-even, but n = 73 and +-5.9
+#   totals        38.0% (30-49)
+#   margin error  10.09 against the market's 9.78
+#   total error   11.86 against the market's 10.63
+#
+# The spread number being above water after a backtest that said 48.2% is not a
+# reversal, it is what a seventy-game sample does. Neither figure is worth
+# acting on; both are worth reporting. Straight-up is the one that should sting:
+# the model is picking winners ten points behind the line, worse than the 64.7%
+# it managed in backtest.
+LIVE_2026_SU = 0.538
+LIVE_2026_MARKET_SU = 0.641
+LIVE_2026_ATS = 0.548
+LIVE_2026_TOTALS = 0.380
+LIVE_2026_SAMPLE = 79
+
+# Totals: the band that looked promising is dead, and this is how it died.
+#
+# On the held-out seasons, disagreements of two points or more hit 55.7% over
+# 255 games and held in both of them (53.1%, 58.3%). That was flagged here as
+# worth watching rather than worth betting, because z was only +1.82 and it was
+# one of about fifteen cuts tried to find it.
+#
+# It was then watched, live, through the first five weeks of 2026. It went
+# 10-30. The nine games published in the week 1 board went 0-9 on their own.
+# Pooling the live run with the backtest gives 152 of 295, which is 51.5% -
+# under the break-even it needed to clear in the first place.
+#
+# That is what a cut found by searching looks like when it meets new data, and
+# it is the reason the flag is gone rather than being quietly reweighted.
+TOTALS_ALL = 0.495            # backtest, and never better than a coin flip
+TOTALS_EDGE2 = 0.515          # backtest + live 2026, pooled
+TOTALS_EDGE2_SAMPLE = 295
+TOTALS_BAND_RETIRED = True
 TOTALS_MIN_EDGE = 2.0
 
 

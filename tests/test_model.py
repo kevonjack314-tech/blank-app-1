@@ -1479,9 +1479,26 @@ def test_total_side_and_the_one_band_with_anything_behind_it():
     assert call["side"] == "Under"
     assert call["in_measured_band"] is False       # half a point is not the band
 
-    # the band is a real measurement, but it is not yet significant
-    assert coach.TOTALS_EDGE2 > coach.ATS_BREAKEVEN
+    # The band is retired. It looked like 55.7% over 255 backtest games, went
+    # 10-30 live through the first five weeks of 2026, and pools to 51.5% -
+    # under break-even. Pinned so nobody revives it without new evidence.
+    assert coach.TOTALS_BAND_RETIRED is True
+    assert coach.TOTALS_EDGE2 < coach.ATS_BREAKEVEN
     assert coach.TOTALS_ALL < coach.ATS_BREAKEVEN
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "10-30" in app, "the live result that killed the band must be shown"
+
+
+def test_the_live_season_record_is_reported_even_though_it_is_poor():
+    """53.8% straight up against the closing line's 64.1% on the same games.
+    Reporting it is the point - a model that only publishes its backtest is
+    telling you about the backtest."""
+    assert coach.LIVE_2026_SU < coach.LIVE_2026_MARKET_SU
+    assert coach.LIVE_2026_SAMPLE >= 70
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "LIVE_2026_SU" in app or "53.8" in app
 
 
 def test_the_underdog_lean_is_recorded_as_an_artifact_not_a_view():

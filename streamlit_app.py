@@ -734,13 +734,24 @@ with tab_games:
             "construction. So these sides are largely a reading of the model\u2019s own "
             "compression rather than of the game \u2014 which is exactly what a 48% "
             "record looks like.\n\n"
-            f"Totals are a better story and still not a green light: "
-            f"{coach.TOTALS_ALL*100:.1f}% overall, but "
-            f"**{coach.TOTALS_EDGE2*100:.1f}%** over "
-            f"{coach.TOTALS_EDGE2_SAMPLE} games when the model differs by two "
-            "points or more, holding in both held-out seasons. That is z = 1.8 "
-            "and one of fifteen cuts tried, so it is worth watching for another "
-            "season rather than banking on.",
+            f"**Totals: the band I flagged is dead.** On the held-out seasons "
+            "a two-point disagreement hit 55.7% over 255 games and I called it "
+            "worth watching rather than worth betting. It was watched. Through "
+            f"the first five weeks of 2026 it went **10-30**, and the nine such "
+            "games on the published Week 1 board went 0-9 on their own. Pooled "
+            f"with the backtest that is {coach.TOTALS_EDGE2*100:.1f}% over "
+            f"{coach.TOTALS_EDGE2_SAMPLE} games — under break-even. The flag is "
+            "gone. That is what a pattern found by searching looks like when it "
+            "meets new data.\n\n"
+            f"**Live this season, weeks 1-5 ({coach.LIVE_2026_SAMPLE} games "
+            "projected from only what preceded them):** straight up "
+            f"{coach.LIVE_2026_SU*100:.1f}% against the closing line's "
+            f"{coach.LIVE_2026_MARKET_SU*100:.1f}%; against the spread "
+            f"{coach.LIVE_2026_ATS*100:.1f}%; totals "
+            f"{coach.LIVE_2026_TOTALS*100:.1f}%. The spread figure is above "
+            "break-even and the sample is 73 games, so it is noise in the "
+            "friendly direction rather than a change of fortune. The one that "
+            "should sting is straight up: ten points behind the line.",
             icon="📋",
         )
 
