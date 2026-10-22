@@ -38,6 +38,57 @@ TWO_HIGH = {"COVER_2", "COVER_4", "COVER_6", "2_MAN"}
 
 MIN_CHARTED = 80  # below this a team's coverage profile is not stable
 
+# Charting columns. Play rows for the current season arrive within days of a
+# game; the coverage labels on them do not, because they are charted by hand
+# and the feed lands weeks later or not at all mid-season.
+CHARTED_COLUMNS = ("defense_man_zone_type", "defense_coverage_type")
+
+
+def charted_seasons(plays: pd.DataFrame, columns: tuple | None = None) -> list[int]:
+    """Seasons that actually carry charting in ``columns``, not merely play rows.
+
+    This distinction caused a silent outage worth guarding. In-season mode sets
+    the model's anchor season to the season under way, and every coverage read
+    was asked for ``seasons=(anchor,)``. The current season has play rows from
+    the first week onward, so nothing looked wrong - but its coverage labels are
+    charted by hand and had not been published, so the filter matched 11,484
+    rows of which zero were labelled. ``coverage_fingerprint`` returned an empty
+    frame, and with it every man/zone read, every shell matchup and every
+    coverage-driven scheme collision disappeared from the app without an error.
+    """
+    cols = [c for c in (columns or CHARTED_COLUMNS) if c in plays.columns]
+    if not cols or "season" not in plays.columns:
+        return []
+    labelled = plays[plays[cols].notna().any(axis=1)]
+    if labelled.empty:
+        return []
+    return sorted(int(s) for s in labelled["season"].dropna().unique())
+
+
+def resolve_coverage_seasons(plays: pd.DataFrame, seasons: tuple | None,
+                             columns: tuple | None = None) -> tuple | None:
+    """The requested seasons, or the latest charted one if they carry no labels.
+
+    Falling back is better than returning nothing: a defence's coverage habits
+    are the most persistent thing about it, so last season's charting is a far
+    better answer than silence. The fallback is reported by the caller rather
+    than hidden - ``charted_seasons`` is public so the app can say which season
+    a coverage number came from.
+
+    ``columns`` names the charting the caller actually depends on. Routes and
+    personnel groupings ride the same participation feed as the coverage labels
+    and in practice land together, but a reader of ``route`` should not have its
+    season decided by whether ``defense_coverage_type`` was populated.
+    """
+    if not seasons:
+        return seasons
+    available = set(charted_seasons(plays, columns))
+    if not available:
+        return seasons
+    if available & set(int(s) for s in seasons):
+        return seasons
+    return (max(available),)
+
 
 def attach(plays: pd.DataFrame, part: pd.DataFrame) -> pd.DataFrame:
     """Join coverage charting onto prepared plays."""
@@ -64,6 +115,7 @@ def defense_coverage_profile(plays: pd.DataFrame, team: str | None = None,
     if "defense_coverage_type" not in plays.columns:
         return pd.DataFrame()
     df = plays[plays["defense_coverage_type"].notna()]
+    seasons = resolve_coverage_seasons(plays, seasons)
     if seasons:
         df = df[df["season"].isin(seasons)]
     if team:
@@ -89,6 +141,7 @@ def coverage_fingerprint(plays: pd.DataFrame, seasons: tuple | None = None) -> p
     if "defense_man_zone_type" not in plays.columns:
         return pd.DataFrame()
     df = plays[plays["defense_coverage_type"].notna() | plays["defense_man_zone_type"].notna()]
+    seasons = resolve_coverage_seasons(plays, seasons)
     if seasons:
         df = df[df["season"].isin(seasons)]
     if df.empty:
@@ -128,6 +181,7 @@ def offense_vs_coverage(plays: pd.DataFrame, team: str, seasons: tuple | None = 
     if "defense_man_zone_type" not in plays.columns:
         return pd.DataFrame()
     df = plays[(plays["posteam"] == normalize_team(team)) & plays["is_dropback"]]
+    seasons = resolve_coverage_seasons(plays, seasons)
     if seasons:
         df = df[df["season"].isin(seasons)]
     df = df[df["defense_man_zone_type"].notna()]
@@ -174,6 +228,7 @@ def route_profile(plays: pd.DataFrame, team: str | None = None,
     if "route" not in plays.columns:
         return pd.DataFrame()
     df = plays[plays["route"].notna()]
+    seasons = resolve_coverage_seasons(plays, seasons, ("route",))
     if seasons:
         df = df[df["season"].isin(seasons)]
     league = df.groupby("route").size()
@@ -200,6 +255,7 @@ def personnel_profile(plays: pd.DataFrame, team: str, seasons: tuple | None = No
     if "offense_personnel" not in plays.columns:
         return pd.DataFrame()
     df = plays[(plays["posteam"] == normalize_team(team)) & plays["offense_personnel"].notna()]
+    seasons = resolve_coverage_seasons(plays, seasons, ("offense_personnel",))
     if seasons:
         df = df[df["season"].isin(seasons)]
     if df.empty:

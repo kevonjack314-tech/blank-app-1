@@ -1465,24 +1465,34 @@ def test_the_measured_ats_record_is_carried_and_is_not_a_winning_one():
     assert "48.2%" in app, "the ATS record must be stated where the picks are"
 
 
-def test_total_side_and_the_one_band_with_anything_behind_it():
+def test_total_side_reports_a_large_disagreement_without_endorsing_it():
     call = coach.total_call(_slate_row())          # model 44.0, no market total
     assert call is None
 
     row = _slate_row(); row["market_total"] = 41.0
     call = coach.total_call(row)                   # model 44.0 vs 41.0
     assert call["side"] == "Over" and call["edge_points"] == pytest.approx(3.0)
-    assert call["in_measured_band"] is True
+    assert call["large_disagreement"] is True
+    assert call["band_retired"] is True, "the size of a gap is not a signal"
 
     row["market_total"] = 44.5
     call = coach.total_call(row)
     assert call["side"] == "Under"
-    assert call["in_measured_band"] is False       # half a point is not the band
+    assert call["large_disagreement"] is False     # half a point is not large
 
     # The band is retired. It looked like 55.7% over 255 backtest games, went
     # 10-30 live through the first five weeks of 2026, and pools to 51.5% -
     # under break-even. Pinned so nobody revives it without new evidence.
     assert coach.TOTALS_BAND_RETIRED is True
+
+
+def test_the_app_never_badges_a_total_as_being_in_the_measured_band():
+    """The metric badge read "in the measured band" while the explainer two
+    inches above said that band was dead. A badge that reads like a confidence
+    marker is exactly how a retired signal stays alive."""
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "in the measured band" not in app
     assert coach.TOTALS_EDGE2 < coach.ATS_BREAKEVEN
     assert coach.TOTALS_ALL < coach.ATS_BREAKEVEN
     from pathlib import Path
@@ -1730,3 +1740,401 @@ def test_the_app_defaults_to_the_next_unplayed_week():
     assert "_next_week" in app
     assert 'index=0, key="global_week"' not in app, \
         "the week selector must not be pinned to the first week of the season"
+
+
+# ------------------------------------------------------------------ the staff
+
+def _staff_call(margin=7.0, total=44.0, disagreement=None):
+    return {"away": "DAL", "home": "PHI", "pick": "PHI", "pick_name": "Eagles",
+            "opponent": "DAL", "win_prob": 0.62, "confidence": "lean",
+            "margin": abs(margin), "headline": "Eagles over Cowboys.",
+            "disagreement": disagreement, "reasons": [], "spread": None,
+            "total": None}
+
+
+def _staff_row(margin=7.0, total=44.0, wind=None, roof="outdoors"):
+    return pd.Series({"away": "DAL", "home": "PHI", "model_margin": margin,
+                      "model_total": total, "wind": wind, "roof": roof})
+
+
+def _staff_plan():
+    """One game's scouting package, both sides, in weekly_plan's shape."""
+    return {
+        "home": "PHI", "away": "DAL",
+        "home_offense": {
+            "offense": "PHI", "defense": "DAL",
+            "collisions": [
+                {"axis": "Perimeter runs vs light boxes", "edge": "e1",
+                 "detail": "d1", "favours": "PHI"},
+                {"axis": "Loaded box", "edge": "e2", "detail": "d2",
+                 "favours": "DAL"},
+                {"axis": "Play-action vs pressure", "edge": "e3", "detail": "d3",
+                 "favours": "variance"},
+            ],
+            "coverage": ["DAL sit in single-high on 41% of charted snaps."],
+        },
+        "away_offense": {
+            "offense": "DAL", "defense": "PHI",
+            "collisions": [
+                {"axis": "Deep shots vs two-high", "edge": "e4", "detail": "d4",
+                 "favours": "PHI"},
+                {"axis": "Tempo", "edge": "e5", "detail": "d5", "favours": "DAL"},
+            ],
+            "coverage": [],
+        },
+    }
+
+
+def test_the_coordinators_only_speak_from_their_own_side_of_the_ball():
+    """The OC's plan comes from the block where his team has the ball and the
+    DC's from the block where it defends. Crossing them would have each
+    coordinator describing the other's game."""
+    from nflproj import staff as stf
+
+    off = stf.offensive_plan("PHI", "DAL", _staff_plan())
+    dfn = stf.defensive_plan("PHI", "DAL", _staff_plan())
+
+    # PHI with the ball: the perimeter-run collision is ours to attack and the
+    # loaded box is what they take away.
+    assert any("Perimeter runs" in a for a in off["attack"])
+    assert any("Loaded box" in a for a in off["problems"])
+    # PHI defending: the two-high collision is our answer, their tempo is the
+    # concession. Neither belongs to the offensive coordinator.
+    assert any("Deep shots vs two-high" in a for a in dfn["take_away"])
+    assert any("Tempo" in a for a in dfn["concede"])
+    assert not any("Tempo" in a for a in off["attack"] + off["problems"])
+
+
+def test_a_bracket_flag_is_set_above_the_measured_ceiling_distribution():
+    """Across 864 player-seasons the median 90th-percentile-to-mean ratio is
+    1.78, so a threshold below that fires on nearly everyone. A first attempt
+    at 1.60 flagged eleven of twelve threats on a real slate, which is a flag
+    carrying no information."""
+    from nflproj import staff as stf
+
+    assert stf.CEILING_MULTIPLE > 1.78, \
+        "a bracket bar below the median tail length flags ordinary players"
+
+    ordinary = [{"player": "Ordinary Back", "pos": "RB", "projection": 80.0,
+                 "ceiling_90th": 80.0 * 1.80, "x_factor_score": 1.0}]
+    exceptional = [{"player": "Tail Monster", "pos": "RB", "projection": 80.0,
+                    "ceiling_90th": 80.0 * 2.60, "x_factor_score": 1.0}]
+    assert not stf.defensive_plan("PHI", "DAL", _staff_plan(),
+                                  ordinary)["threat"]["bracket_worthy"]
+    assert stf.defensive_plan("PHI", "DAL", _staff_plan(),
+                              exceptional)["threat"]["bracket_worthy"]
+
+
+def test_a_situational_band_has_to_clear_its_own_noise_bar():
+    """Play-level EPA has a standard deviation of 1.26, so a 20-play band
+    carries a two-standard-error bar of 0.80 EPA on the net. Reporting the top
+    row of the table regardless was reporting noise with a label on it."""
+    from nflproj import staff as stf
+
+    noisy = pd.DataFrame([
+        {"situation": "Goal to go", "off plays": 15.0, "off EPA": 0.17,
+         "def EPA allowed": 0.63, "net": 0.79},
+        {"situation": "3rd & long (7+)", "off plays": 20.0, "off EPA": -0.1,
+         "def EPA allowed": -0.2, "net": -0.30},
+    ])
+    best, worst = stf._situational_read(noisy)
+    assert best is None, "a 15-play band cannot clear 2 SE and must stay silent"
+    assert worst is None
+
+    real = pd.DataFrame([
+        {"situation": "2nd & medium (3-6)", "off plays": 120.0, "off EPA": 0.30,
+         "def EPA allowed": 0.25, "net": 0.55},
+        {"situation": "3rd & long (7+)", "off plays": 110.0, "off EPA": -0.30,
+         "def EPA allowed": -0.30, "net": -0.60},
+    ])
+    best, worst = stf._situational_read(real)
+    assert best is not None and best["situation"] == "2nd & medium (3-6)"
+    assert best["net"] > best["bar"]
+    assert worst is not None and worst["situation"] == "3rd & long (7+)"
+
+
+def test_the_noise_bar_shrinks_with_sample_the_way_a_standard_error_does():
+    from nflproj import staff as stf
+
+    assert stf._band_bar(20) == pytest.approx(0.796, abs=0.01)
+    assert stf._band_bar(80) == pytest.approx(0.398, abs=0.01)
+    assert stf._band_bar(80) < stf._band_bar(20)
+    assert stf._band_bar(0) == float("inf")
+
+
+def test_availability_supersedes_a_ceiling_rather_than_being_listed_beside_it():
+    """A player who may not dress cannot beat us with his tail. Saying both
+    about one man pads the list and buries the other games' falsifiers."""
+    from nflproj import staff as stf
+
+    doubtful = [{"player": "Questionable Star", "pos": "RB", "projection": 60.0,
+                 "ceiling_90th": 190.0, "x_factor_score": 1.0, "p_active": 0.42}]
+    rep = stf.staff_report(_staff_call(), _staff_row(), _staff_plan(),
+                           {"DAL": doubtful})
+    tail = [f for f in rep["falsifiers"] if "tail that beats us" in f]
+    dress = [f for f in rep["falsifiers"] if "may not dress" in f]
+    assert not tail, "a player at 42% to play is not the tail that beats us"
+    assert len(dress) == 1
+    assert "42%" in dress[0]
+
+    healthy = [dict(doubtful[0], p_active=0.99)]
+    rep2 = stf.staff_report(_staff_call(), _staff_row(), _staff_plan(),
+                            {"DAL": healthy})
+    assert any("tail that beats us" in f for f in rep2["falsifiers"])
+    assert not any("may not dress" in f for f in rep2["falsifiers"])
+
+
+def test_a_one_score_projection_is_always_declared_a_one_score_game():
+    """The model's own margins have a 4.2-point standard deviation, so a
+    three-point projected margin is not a three-point edge."""
+    from nflproj import staff as stf
+
+    rep = stf.staff_report(_staff_call(margin=2.4), _staff_row(margin=2.4),
+                           _staff_plan())
+    assert any("one-score game" in f for f in rep["falsifiers"])
+    assert rep["management"] and "fourth-quarter" in rep["management"]
+
+    wide = stf.staff_report(_staff_call(margin=11.0), _staff_row(margin=11.0),
+                            _staff_plan())
+    assert not any("one-score game" in f for f in wide["falsifiers"])
+
+
+def test_a_matchup_swing_under_the_bar_is_not_reported_at_all():
+    """"This matchup is worth -1 yards to him" is noise phrased as a read."""
+    from nflproj import staff as stf
+
+    tiny = [{"player": "Flat Matchup", "pos": "WR", "projection": 83.0,
+             "ceiling_90th": 163.0, "x_factor_score": 1.0,
+             "matchup_swing": -1.2}]
+    off = stf.offensive_plan("PHI", "DAL", _staff_plan(), tiny)
+    assert off["feature"]["swing_note"] is None
+
+    real = [dict(tiny[0], matchup_swing=14.0)]
+    note = stf.offensive_plan("PHI", "DAL", _staff_plan(), real)["feature"]["swing_note"]
+    assert note and "+14 yards" in note
+
+    cost = [dict(tiny[0], matchup_swing=-14.0)]
+    note2 = stf.offensive_plan("PHI", "DAL", _staff_plan(), cost)["feature"]["swing_note"]
+    assert note2 and "costs him 14 yards" in note2
+
+
+def test_the_staff_report_degrades_instead_of_failing_without_scouting():
+    """Preseason, or on a game the charting feed has not reached, there is no
+    plan and no x-factor. A coordinator with no charting still has a view."""
+    from nflproj import staff as stf
+
+    rep = stf.staff_report(_staff_call(), _staff_row(), None, None, None)
+    assert rep["offense"]["attack"] == []
+    assert rep["defense"]["threat"] is None
+    assert rep["verdict"]
+    assert isinstance(rep["falsifiers"], list)
+
+
+def test_a_high_variance_collision_becomes_a_falsifier():
+    """The scheme layer marks some exchanges high-variance rather than in
+    anyone's favour. That is exactly a thing that would make a call wrong."""
+    from nflproj import staff as stf
+
+    rep = stf.staff_report(_staff_call(), _staff_row(), _staff_plan())
+    assert any("High-variance" in f for f in rep["falsifiers"])
+
+
+def test_the_market_disagreeing_is_carried_into_the_falsifiers():
+    from nflproj import staff as stf
+
+    rep = stf.staff_report(
+        _staff_call(disagreement="We are off the board here — the line has Dallas."),
+        _staff_row(), _staff_plan())
+    assert any("line disagrees" in f for f in rep["falsifiers"])
+
+
+def test_falsifiers_stay_short_enough_to_be_read():
+    """Four is a staff meeting; ten is a disclaimer nobody reads."""
+    from nflproj import staff as stf
+
+    doubtful = [{"player": "A", "pos": "RB", "projection": 60.0,
+                 "ceiling_90th": 190.0, "x_factor_score": 1.0, "p_active": 0.4}]
+    mine = [{"player": "B", "pos": "WR", "projection": 70.0,
+             "ceiling_90th": 150.0, "x_factor_score": 1.0, "p_active": 0.5}]
+    rep = stf.staff_report(
+        _staff_call(margin=1.0,
+                    disagreement="We are off the board here — the line has Dallas."),
+        _staff_row(margin=1.0), _staff_plan(), {"DAL": doubtful, "PHI": mine})
+    assert len(rep["falsifiers"]) <= 4
+
+
+def test_the_games_tab_keeps_the_staff_detail_behind_a_click():
+    """The user asked for simpler tabs. The call is the card; the room arguing
+    about it is one expander down, or the slate becomes unreadable."""
+    from pathlib import Path
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "_render_staff" in app
+    body = app[app.index("def _render_staff"):]
+    body = body[:body.index("# ================")]
+    assert "st.expander" in body, "the staff breakdown must not be inline"
+
+
+def test_an_injury_flag_is_measured_against_the_role_not_an_absolute_number():
+    """The availability layer's baseline for a healthy RB1 is 0.82 and for a
+    fifth receiver 0.52, both on role alone. An absolute bar of 0.85 therefore
+    called healthy starters injury concerns and would condemn every backup
+    forever. The discount is against the player's own role."""
+    from nflproj import staff as stf
+    from nflproj.availability import AVAILABILITY_PRIOR
+
+    def _flag(pos, rank, p):
+        threat = [{"player": "Subject", "pos": pos, "rank": rank, "p_active": p,
+                   "projection": 60.0, "ceiling_90th": 100.0,
+                   "x_factor_score": 1.0}]
+        rep = stf.staff_report(_staff_call(), _staff_row(), _staff_plan(),
+                               {"DAL": threat})
+        return any("may not dress" in f for f in rep["falsifiers"])
+
+    # Healthy at every depth: never a flag, however low the role baseline is.
+    for pos, rank in (("WR", 1), ("RB", 1), ("TE", 1), ("WR", 5), ("RB", 4)):
+        baseline = AVAILABILITY_PRIOR[(pos, rank)]
+        assert not _flag(pos, rank, baseline), \
+            f"a healthy {pos}{rank} at its own baseline {baseline} is not news"
+
+    # The injury report's own multipliers have to trip it, at any depth.
+    for pos, rank in (("WR", 1), ("WR", 5), ("RB", 1)):
+        baseline = AVAILABILITY_PRIOR[(pos, rank)]
+        assert _flag(pos, rank, baseline * 0.72), "Questionable must register"
+        assert _flag(pos, rank, baseline * 0.55), "a week of no practice must register"
+
+
+def test_coverage_reads_fall_back_to_the_last_charted_season():
+    """In-season mode anchors on the current season, whose play rows exist but
+    whose coverage labels are charted by hand and arrive late. Asking for
+    coverage on that season matched thousands of rows of which none were
+    labelled, so every man/zone read in the app went empty with no error."""
+    from nflproj import coverage as cvg
+
+    plays = pd.DataFrame({
+        "season": [2025] * 100 + [2026] * 100,
+        "defteam": ["DAL"] * 200,
+        "posteam": ["PHI"] * 200,
+        "play_id": range(200),
+        "epa": [0.1] * 200,
+        "yards_gained": [5.0] * 200,
+        "complete_pass": [1] * 200,
+        "air_yards": [8.0] * 200,
+        "is_dropback": [True] * 200,
+        # Only the completed season carries charting.
+        "defense_man_zone_type": ["MAN_COVERAGE"] * 100 + [None] * 100,
+        "defense_coverage_type": ["COVER_1"] * 100 + [None] * 100,
+    })
+
+    assert cvg.charted_seasons(plays) == [2025]
+    assert cvg.resolve_coverage_seasons(plays, (2026,)) == (2025,)
+    # A season that does carry charting is left alone.
+    assert cvg.resolve_coverage_seasons(plays, (2025,)) == (2025,)
+
+    fp = cvg.coverage_fingerprint(plays, seasons=(2026,))
+    assert not fp.empty, "asking for the uncharted season must not return nothing"
+    assert int(fp["season"].iloc[0]) == 2025
+
+
+def test_a_season_with_rows_but_no_labels_is_not_counted_as_charted():
+    """The distinction that caused the outage: play rows are not charting."""
+    from nflproj import coverage as cvg
+
+    plays = pd.DataFrame({
+        "season": [2026] * 50,
+        "defteam": ["DAL"] * 50,
+        "defense_man_zone_type": [None] * 50,
+        "defense_coverage_type": [None] * 50,
+    })
+    assert cvg.charted_seasons(plays) == []
+
+
+def test_coverage_notes_are_not_filed_as_an_attacking_edge():
+    """``coverage_matchup`` returns prose with no side attached, and it cuts
+    both ways: "we are better against zone, and they play man on 40% of snaps"
+    is a problem, not a plan. Appending it to the attack list put exactly that
+    sentence under "where we attack"."""
+    from nflproj import staff as stf
+
+    plan = _staff_plan()
+    plan["home_offense"]["coverage"] = [
+        "PHI are markedly better against zone (-0.02 EPA vs man, +0.10 vs zone), "
+        "and DAL play man on 40% of charted snaps against a 31% league rate."
+    ]
+    off = stf.offensive_plan("PHI", "DAL", plan)
+    assert off["coverage"], "the note must still be reported"
+    assert not any("markedly better against zone" in a for a in off["attack"]), \
+        "an unflattering coverage note must not be an attacking edge"
+    assert not any("markedly better against zone" in a for a in off["problems"])
+
+
+def test_the_live_spread_record_is_never_quoted_without_its_one_big_week():
+    """56.9% against the spread is the most misleading true number in the
+    project: one week makes it, and without that week it is 51.7% over 60
+    games — under break-even. Anywhere the headline figure appears, the
+    decomposition has to appear with it."""
+    from pathlib import Path
+    from nflproj import coach as ch
+
+    assert ch.LIVE_2026_ATS > ch.ATS_BREAKEVEN, "the trap only exists above break-even"
+    assert ch.LIVE_2026_ATS_EX_BEST_WEEK < ch.ATS_BREAKEVEN, \
+        "with its best week removed the record must be below break-even"
+    assert ch.LIVE_2026_ATS_EX_BEST_SAMPLE < ch.LIVE_2026_SAMPLE
+
+    app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
+    assert "LIVE_2026_ATS_EX_BEST_WEEK" in app, \
+        "the app quotes the ATS record, so it must also quote it without week 4"
+
+
+def test_the_live_record_still_trails_the_market_straight_up():
+    """The headline the model should never be allowed to bury."""
+    from nflproj import coach as ch
+
+    assert ch.LIVE_2026_SU < ch.LIVE_2026_MARKET_SU
+
+
+def test_no_dict_literal_assigns_the_same_key_twice():
+    """``game_call`` built a dict with "total" on two lines: a float, then the
+    total_call dict. The second silently won, so the numeric model total was
+    unreachable and any caller reading it got a dict instead. Python does not
+    warn about this, so it is worth a scan."""
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for f in sorted((root / "nflproj").glob("*.py")) + [root / "streamlit_app.py"]:
+        for node in ast.walk(ast.parse(f.read_text())):
+            if not isinstance(node, ast.Dict):
+                continue
+            keys = [k.value for k in node.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+            dupes = sorted({k for k in keys if keys.count(k) > 1})
+            if dupes:
+                offenders.append(f"{f.name}:{node.lineno} repeats {dupes}")
+    assert not offenders, "duplicate keys in a dict literal: " + "; ".join(offenders)
+
+
+def test_the_staff_block_does_not_repeat_the_card_above_it():
+    """The call's reasons and the coordinator's plan come from the same
+    collisions. Printed side by side without a filter, the expander repeated
+    the card word for word and there was no reason to open it."""
+    from nflproj import staff as stf
+
+    plan = _staff_plan()
+    note = ("**Perimeter runs vs light boxes** — e1. d1")
+    off = stf.offensive_plan("PHI", "DAL", plan, already_said=[note])
+    assert not any(note == a for a in off["attack"]), \
+        "a line already on the card must not be repeated below it"
+
+    # Without the filter it is there, so the test is testing the filter.
+    assert any(note == a for a in
+               stf.offensive_plan("PHI", "DAL", plan)["attack"])
+
+
+def test_the_report_passes_the_calls_reasons_through_to_the_coordinator():
+    from nflproj import staff as stf
+
+    call = _staff_call()
+    call["reasons"] = ["**Perimeter runs vs light boxes** — e1. d1"]
+    rep = stf.staff_report(call, _staff_row(), _staff_plan())
+    assert not any("Perimeter runs" in a for a in rep["offense"]["attack"])

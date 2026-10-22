@@ -21,7 +21,8 @@ from nflproj import (board, coverage as cvg, data as ndata, gamemodel as gm,
                      coach, defenders as dfn, gameplan as gp, joint as jnt, kicking as kk,
                      leaderboard as lb, odds, routes as rt,
                      lotto, news, parlay as play, picks, pipeline, playbook,
-                     projections as pj, report, schemes, usage as um, venues as V)
+                     projections as pj, report, schemes, staff, usage as um,
+                     venues as V)
 
 # Single categorical hue; a bar chart of one measure is one series, so no
 # legend is needed and values are labelled directly.
@@ -112,13 +113,17 @@ def load(through_week: int | None = None):
     lg_off = schemes.league_means(ctx.fingerprints, "offense", anchor)
     lg_def = schemes.league_means(ctx.fingerprints, "defense", anchor)
     cov_plays = cvg.attach(ctx.plays, ctx.participation)
+    # The season the coverage reads will really use. In-season this is the last
+    # completed season, because the current one has play rows but no labels.
+    _charted = cvg.resolve_coverage_seasons(cov_plays, (anchor,))
+    cov_season = int(_charted[0]) if _charted else None
     cov_fp = cvg.coverage_fingerprint(cov_plays, seasons=(anchor,))
     ratings = gm.adjusted_ratings(ctx.plays)
     penalties = gm.coaching_penalties(ctx.staffs)
     team_proj = gm.project_ratings(ratings, anchor_season=anchor, coach_penalty=penalties)
     scoring = gm.fit_scoring_map(ctx.plays, ctx.games[ctx.games["season"] <= anchor], ratings)
     return (ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings,
-            team_proj, scoring, cov_plays, cov_fp)
+            team_proj, scoring, cov_plays, cov_fp, cov_season)
 
 
 _first_run_sync()
@@ -151,7 +156,7 @@ with st.sidebar:
 
 try:
     (ctx, pm, usage_hist, sampler, lg_off, lg_def, anchor, ratings,
-     team_proj, scoring, cov_plays, cov_fp) = load(_through)
+     team_proj, scoring, cov_plays, cov_fp, _cov_season) = load(_through)
 except Exception as exc:                                   # noqa: BLE001
     # Almost always a data problem rather than a code one: the nflverse cache
     # is missing or was damaged by an interrupted download. Say so, because
@@ -785,6 +790,92 @@ with tab_parlay:
                         st.dataframe(cm.round(3), width="stretch")
 
 
+def _render_staff(rep: dict) -> None:
+    """The staff meeting on one game, in the order a staff actually speaks.
+
+    Coordinators first, because they are describing the game; the head coach
+    last, because he is deciding it. The falsifiers get their own block rather
+    than being folded into the reasons - the thing that would change the call
+    is not one more argument for it.
+    """
+    with st.expander("🎙️ The staff on this game"):
+        st.caption(rep["emphasis_line"])
+        oc, dc = st.columns(2)
+
+        o = rep["offense"]
+        with oc:
+            st.markdown(f"**Offensive coordinator** · {o['unit']}")
+            if o["attack"]:
+                st.markdown("*Where we attack*")
+                for a in o["attack"]:
+                    st.markdown(f"- {a}")
+            if o["problems"]:
+                st.markdown("*What they take away*")
+                for a in o["problems"]:
+                    st.markdown(f"- {a}")
+            if o.get("coverage"):
+                # Charting notes with no side attached - they can favour either
+                # offence, so they are reported rather than assigned.
+                st.markdown("*What the charting says*")
+                for a in o["coverage"]:
+                    st.markdown(f"- {a}")
+            f = o.get("feature")
+            if f:
+                note = f" {f['swing_note']}" if f.get("swing_note") else ""
+                pos = f" ({f['pos']})" if f.get("pos") else ""
+                st.markdown(
+                    f"**Feature him: {f['player']}**{pos} — projected "
+                    f"{f['projection']:.0f} with a 90th-percentile game of "
+                    f"{f['ceiling']:.0f}." + note)
+            band = o.get("best_situation")
+            if band:
+                st.caption(
+                    f"Best down-and-distance: **{band['situation']}** "
+                    f"(our {band.get('off_epa', 0):+.3f} EPA against the "
+                    f"{band.get('def_epa_allowed', 0):+.3f} they allow there, "
+                    f"over {band['plays']:.0f} plays — clears the "
+                    f"{band['bar']:.2f} EPA noise bar).")
+
+        d = rep["defense"]
+        with dc:
+            st.markdown(f"**Defensive coordinator** · {d['unit']}")
+            th = d.get("threat")
+            if th:
+                how = ("He has to be taken away by name — bracket him and make "
+                       "someone else beat us."
+                       if th["bracket_worthy"] else
+                       "Structure covers him; no need to tilt the whole call "
+                       "toward one player.")
+                tpos = f" ({th['pos']})" if th.get("pos") else ""
+                st.markdown(
+                    f"**Their threat: {th['player']}**{tpos} — projected "
+                    f"{th['projection']:.0f}, ceiling {th['ceiling']:.0f}. {how}")
+            if d["take_away"]:
+                st.markdown("*What our structure answers*")
+                for a in d["take_away"]:
+                    st.markdown(f"- {a}")
+            if d["concede"]:
+                st.markdown("*What it concedes*")
+                for a in d["concede"]:
+                    st.markdown(f"- {a}")
+            band = d.get("exposure")
+            if band:
+                st.caption(
+                    f"Where they hurt us: **{band['situation']}** "
+                    f"(their {band.get('off_epa', 0):+.3f} EPA against the "
+                    f"{band.get('def_epa_allowed', 0):+.3f} we allow there, "
+                    f"over {band['plays']:.0f} plays — clears the "
+                    f"{band['bar']:.2f} EPA noise bar).")
+
+        if rep["falsifiers"]:
+            st.markdown("**What would make me wrong**")
+            for fz in rep["falsifiers"]:
+                st.markdown(f"- {fz}")
+        if rep["management"]:
+            st.info(f"**How this one gets won on the sideline.** {rep['management']}",
+                    icon="🧠")
+
+
 # ================================================================= GAMES
 @st.cache_resource(max_entries=1, show_spinner="Working up the slate…")
 def _week_calls(week: int):
@@ -795,7 +886,7 @@ def _week_calls(week: int):
         return gslate, []
     gcs = board.game_contexts(ctx.games, PROJECTION_SEASON, int(week))
     envs = board.game_environments(ctx.games, PROJECTION_SEASON, int(week))
-    plans, xfs = {}, {}
+    plans, xfs, sits = {}, {}, {}
     for r in gslate.itertuples():
         key = (r.away, r.home)
         try:
@@ -803,27 +894,34 @@ def _week_calls(week: int):
                                         lg_off, lg_def, seasons=(anchor,))
         except Exception:
             plans[key] = None
-        side = {}
+        side, sit = {}, {}
         for t in (r.away, r.home):
             if t not in gcs:
                 continue
             try:
-                # Only the top name is ever read back, so asking for two was
-                # paying twice for a player nobody sees.
+                # top_n only truncates a result the simulation has already
+                # produced, so the coordinators' extra names are free; the
+                # cost is in project_team, which runs either way.
                 d = gp.x_factors(t, gcs[t].opponent, ctx, pm, usage_hist, sampler,
-                                 gcs[t], lg_def, env=envs.get(t), n_sims=2500, top_n=1)
+                                 gcs[t], lg_def, env=envs.get(t), n_sims=2500, top_n=3)
                 side[t] = [] if d.empty else d.to_dict("records")
             except Exception:
                 side[t] = []
-        xfs[key] = side
-    return gslate, coach.slate_calls(gslate, plans, xfs, team_proj)
+            try:
+                sit[t] = gp.situational_edges(t, gcs[t].opponent, ctx.plays,
+                                              seasons=(anchor,))
+            except Exception:
+                sit[t] = None
+        xfs[key], sits[key] = side, sit
+    calls = coach.slate_calls(gslate, plans, xfs, team_proj)
+    return gslate, calls, staff.staff_reports(calls, gslate, plans, xfs, sits)
 
 
 with tab_games:
     st.subheader(f"Week {WEEK} — the calls")
     st.caption("Who wins, and the football reason why. Most confident first.")
 
-    gslate, calls = _week_calls(WEEK)
+    gslate, calls, reports = _week_calls(WEEK)
     if not calls:
         st.info("No games scheduled for this week.")
     else:
@@ -848,21 +946,35 @@ with tab_games:
             f"**Totals: the band I flagged is dead.** On the held-out seasons "
             "a two-point disagreement hit 55.7% over 255 games and I called it "
             "worth watching rather than worth betting. It was watched. Through "
-            f"the first five weeks of 2026 it went **10-30**, and the nine such "
+            f"the first five weeks of 2026 it went **10-30**, it has not "
+            "recovered since, and the nine such "
             "games on the published Week 1 board went 0-9 on their own. Pooled "
             f"with the backtest that is {coach.TOTALS_EDGE2*100:.1f}% over "
             f"{coach.TOTALS_EDGE2_SAMPLE} games — under break-even. The flag is "
             "gone. That is what a pattern found by searching looks like when it "
             "meets new data.\n\n"
-            f"**Live this season, weeks 1-5 ({coach.LIVE_2026_SAMPLE} games "
-            "projected from only what preceded them):** straight up "
+            f"**Live this season, through week {coach.LIVE_2026_THROUGH_WEEK} "
+            f"({coach.LIVE_2026_SAMPLE} games projected from only what preceded "
+            "them):** straight up "
             f"{coach.LIVE_2026_SU*100:.1f}% against the closing line's "
             f"{coach.LIVE_2026_MARKET_SU*100:.1f}%; against the spread "
             f"{coach.LIVE_2026_ATS*100:.1f}%; totals "
-            f"{coach.LIVE_2026_TOTALS*100:.1f}%. The spread figure is above "
-            "break-even and the sample is 73 games, so it is noise in the "
-            "friendly direction rather than a change of fortune. The one that "
-            "should sting is straight up: ten points behind the line.",
+            f"{coach.LIVE_2026_TOTALS*100:.1f}%.\n\n"
+            f"**The {coach.LIVE_2026_ATS*100:.1f}% against the spread is the "
+            "most misleading true number here, so take it apart.** One week "
+            "makes it. Week 4 went 11-3 and the other four weeks went 50%, "
+            f"50%, 50% and 57%. Drop that week and it is "
+            f"{coach.LIVE_2026_ATS_EX_BEST_WEEK*100:.1f}% over "
+            f"{coach.LIVE_2026_ATS_EX_BEST_SAMPLE} games — under break-even. "
+            "The 95% interval on the full sample runs 45.5% to 68.3%, so "
+            "break-even sits comfortably inside it. A coin flip with one good "
+            "Sunday in it is exactly what a 539-game backtest at 48.2% says "
+            "to expect.\n\n"
+            "Straight up is the honest headline, and it got worse rather than "
+            "better: nine points behind the closing line. The one genuinely "
+            "encouraging number is margin error — 9.05 against the market's "
+            "8.90, within a sixth of a point. The model's *numbers* are close "
+            "to the market's. It is the sides it turns them into that are not.",
             icon="📋",
         )
 
@@ -881,19 +993,32 @@ with tab_games:
                                   help="Which side the model's own margin takes. "
                                        "Measured 48.2% against the number.")
                     if tt:
+                        # No badge for a large disagreement. The two-point band
+                        # used to carry one; it then went 10-30 live and was
+                        # retired, and a badge that reads like a confidence
+                        # marker is exactly how a dead signal stays alive.
                         b2.metric("Total side", tt["label"],
-                                  delta=f"{tt['edge_points']:.1f} pts off"
-                                        + (" · in the measured band"
-                                           if tt["in_measured_band"] else ""),
+                                  delta=f"{tt['edge_points']:.1f} pts off the total",
                                   delta_color="off",
-                                  help="Over/under the posted total. The two-point "
-                                       "band is the only cut with anything behind "
-                                       "it, and it is unconfirmed.")
+                                  help="Over/under the posted total. Totals are "
+                                       "the model's worst market: "
+                                       f"{coach.LIVE_2026_TOTALS*100:.0f}% live "
+                                       "this season, and the two-point band that "
+                                       "once looked promising went 10-30 and was "
+                                       "retired. Shown for completeness.")
 
                 for reason in c["reasons"]:
                     st.markdown(f"- {reason}")
                 if c["disagreement"]:
                     st.caption(f"⚠️ {c['disagreement']}")
+
+                # The staff breakdown lives one click down on purpose. The card
+                # above is the call; this is the room arguing about it, and a
+                # reader who only wants the call should not have to scroll past
+                # three coordinators to reach the next game.
+                rep = reports.get((c["away"], c["home"]))
+                if rep:
+                    _render_staff(rep)
 
         with st.expander("How much to trust these"):
             st.markdown(
@@ -1307,6 +1432,16 @@ def _deep_coverage():
         "man or zone, and which shell. Coverage is charted on pass plays only, so rates "
         "are shares of charted dropbacks rather than of all snaps."
     )
+    # Which season these actually came from. Charting is done by hand and lands
+    # months late, so in-season this is never the current year - and a reader
+    # looking at a defence that changed coordinators needs to know that.
+    if _cov_season is not None and _cov_season != anchor:
+        st.info(
+            f"Coverage labels are charted by hand and have not been published "
+            f"for {anchor}, so everything on this page is **{_cov_season}** "
+            "charting. Scheme, EPA and usage elsewhere in the app are current; "
+            "this is not. Read it alongside any coordinator change.",
+            icon="📅")
     if cov_fp.empty:
         st.info("Coverage charting unavailable for this season.")
     else:

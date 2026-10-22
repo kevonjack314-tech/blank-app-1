@@ -84,25 +84,40 @@ ATS_UNDERDOG_RATE = 0.787
 MODEL_MARGIN_SD = 4.18
 MARKET_MARGIN_SD = 5.91
 
-# Live 2026, weeks 1-5: 79 games projected from only what preceded them. The
+# Live 2026: every game projected from only the weeks that preceded it. The
 # first real out-of-sample run, and it is not flattering.
 #
-#   straight up   53.8% (42-36)   the closing line went 64.1% on the same games
-#   against spread 54.8% (40-33)  above break-even, but n = 73 and +-5.9
-#   totals        38.0% (30-49)
-#   margin error  10.09 against the market's 9.78
-#   total error   11.86 against the market's 10.63
+# Through week 6, rebuilt each week from only the weeks that preceded it:
 #
-# The spread number being above water after a backtest that said 48.2% is not a
-# reversal, it is what a seventy-game sample does. Neither figure is worth
-# acting on; both are worth reporting. Straight-up is the one that should sting:
-# the model is picking winners ten points behind the line, worse than the 64.7%
-# it managed in backtest.
-LIVE_2026_SU = 0.538
-LIVE_2026_MARKET_SU = 0.641
-LIVE_2026_ATS = 0.548
-LIVE_2026_TOTALS = 0.380
-LIVE_2026_SAMPLE = 79
+#   straight up   51.3% (39-37)   the closing line went 60.5% on the same games
+#   against spread 56.9% (41-31)  above break-even, but n = 72 and +-11.4
+#   totals        40.3% (31-46)
+#   margin error  9.05 against the market's 8.90
+#
+# The spread figure is the one to be careful about, because it looks like an
+# edge and is not. One week makes it: week 4 went 11-3 (78.6%) and the other
+# four weeks went 50.0%, 50.0%, 50.0% and 57.1%. Drop week 4 and the record is
+# 51.7% over 60 games, under break-even. The 95% interval on the full 72 games
+# runs 45.5% to 68.3%, so break-even sits comfortably inside it. This is a
+# coin flip with one good Sunday in it, which is exactly what the 539-game
+# backtest at 48.2% predicted it would look like.
+#
+# Straight up is the honest headline and it got worse, not better: picking
+# winners nine points behind the closing line, and below the 64.7% the model
+# managed in backtest. Margin error is now within 0.15 points of the market's,
+# which says the model's *numbers* are close - it is the sides it turns them
+# into that are not.
+LIVE_2026_SU = 0.513
+LIVE_2026_MARKET_SU = 0.605
+LIVE_2026_ATS = 0.569
+LIVE_2026_TOTALS = 0.403
+LIVE_2026_SAMPLE = 77
+LIVE_2026_THROUGH_WEEK = 6
+# What the spread record looks like with its one big week removed. Carried as a
+# constant because quoting 56.9% without it would be the most misleading true
+# number in this file.
+LIVE_2026_ATS_EX_BEST_WEEK = 0.517
+LIVE_2026_ATS_EX_BEST_SAMPLE = 60
 
 # Totals: the band that looked promising is dead, and this is how it died.
 #
@@ -111,10 +126,11 @@ LIVE_2026_SAMPLE = 79
 # worth watching rather than worth betting, because z was only +1.82 and it was
 # one of about fifteen cuts tried to find it.
 #
-# It was then watched, live, through the first five weeks of 2026. It went
-# 10-30. The nine games published in the week 1 board went 0-9 on their own.
-# Pooling the live run with the backtest gives 152 of 295, which is 51.5% -
-# under the break-even it needed to clear in the first place.
+# It was then watched, live, through the first six weeks of 2026. It went
+# 10-30 over five weeks and has not recovered since; totals overall sit at
+# 40.3% on the season. The nine games published in the week 1 board went 0-9 on
+# their own. Pooling the live run with the backtest gives 152 of 295, which is
+# 51.5% - under the break-even it needed to clear in the first place.
 #
 # That is what a cut found by searching looks like when it meets new data, and
 # it is the reason the flag is gone rather than being quietly reweighted.
@@ -278,7 +294,7 @@ def game_call(row: pd.Series, plan: dict | None, x_factors: dict | None,
         "win_prob": win_prob,
         "confidence": _confidence(p_home),
         "margin": abs(float(row["model_margin"])),
-        "total": float(row["model_total"]),
+        "model_total": float(row["model_total"]),
         "market_spread": market,
         "reasons": reasons,
         "disagreement": disagreement,
@@ -450,8 +466,13 @@ def total_call(row: pd.Series) -> dict | None:
         "label": f"{'Over' if edge > 0 else 'Under'} {market:.1f}",
         "edge_points": abs(edge),
         "model_total": model,
-        # The only cut with anything behind it, and even that is unconfirmed.
-        "in_measured_band": abs(edge) >= TOTALS_MIN_EDGE,
+        # This was once flagged as the cut worth watching. It was watched, it
+        # went 10-30 live, and the flag is retired - so the field is kept only
+        # so a caller can say the disagreement is large, never that it is good.
+        # ``TOTALS_BAND_RETIRED`` is what a caller should read before dressing
+        # this up as a signal.
+        "large_disagreement": abs(edge) >= TOTALS_MIN_EDGE,
+        "band_retired": TOTALS_BAND_RETIRED,
     }
 
 

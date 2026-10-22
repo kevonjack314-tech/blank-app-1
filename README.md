@@ -89,8 +89,12 @@ questions most visits are about; everything else is one click deeper.
   15–25% likelier than a naive calculator says, and cross-game legs correctly
   show no lift. Press it again for a different slip, or build one by hand.
 - **🏈 Games** — independent margin, total and win probability per game from
-  opponent-adjusted EPA ratings, shown next to the market line. It beats the
-  naive baselines and loses to the closing line; see below.
+  opponent-adjusted EPA ratings, shown next to the market line, with a side on
+  the spread and the total. Each game carries **the staff on it** one click
+  down: the offensive coordinator on how to move the ball, the defensive
+  coordinator on the other side's most dangerous player and what taking him
+  away costs, and the head coach's own list of **what would make the call
+  wrong**. It beats the naive baselines and loses to the closing line; see below.
 - **🔍 Deep dive** — the coordinator-level tools behind one selector: the full
   team projection board, the war room (scheme collisions, X-factors, what changed
   this week), team scouting reports with signature concepts, coverage charting,
@@ -271,6 +275,8 @@ nflproj/
   gamemodel.py     team ratings, margin/total/win probability
   joint.py         correlated whole-game simulation
   gameplan.py      scheme collisions and X-factor players
+  coach.py         the call: a side, a confidence, and the reasons
+  staff.py         the staff room: OC plan, DC plan, and the falsifiers
   news.py          hand-entered notes and detected role changes
   picks.py         player line sheets, best picks, odds arithmetic
   parlay.py        correlated parlay pricing

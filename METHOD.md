@@ -820,6 +820,93 @@ the matchup adjustment reads. Opponent adjustment had therefore been silently
 inert for every player projection in the model. Defensive quality is now
 projected separately, regressed by its own measured persistence.
 
+## The staff room
+
+`nflproj/staff.py` turns the measured layers into the thing a staff leaves the
+room with. `coach.game_call` gives a side and two or three reasons; this gives
+the argument behind it, split the way a building is split.
+
+The **offensive coordinator** speaks only from collisions the scheme layer
+resolved in his offence's favour, the coverage charting on the defence he is
+facing, and the player the simulation says the matchup lifts. The **defensive
+coordinator** speaks from the other side's simulated ceiling and from what his
+own structure concedes when it takes that away — a coordinator who will not say
+what a plan costs is selling one rather than describing it. The **head coach**
+weighs the two, states the call, and names the falsifier.
+
+That last part is the one worth having, and it is why this module exists at all.
+Every game carries an explicit list of what would make the call wrong, drawn
+from measured quantities rather than written to sound humble: a projected margin
+inside one score, a swing player whose availability is depressed against his own
+role, a collision the scheme layer itself marks high-variance, a disagreement
+with the closing line.
+
+### Four thresholds that had to be measured rather than chosen
+
+Each of these was first set by eye, and each was wrong in a way that only showed
+up on a real slate. They are recorded because the failure mode is the same every
+time: a threshold set in the same range as the thing it is supposed to detect.
+
+**A bracket-worthy ceiling.** "Take him away by name" should be reserved for an
+unusual tail. The first attempt used a 90th-percentile outcome 1.60× the
+player's own projection — and flagged *eleven of twelve* threats on a test
+slate. Across 864 qualifying player-seasons from 2022–25 the ratio of a
+player's 90th-percentile week to his own mean has a median of **1.78**: the
+threshold sat below the median, so it was detecting "is a football player". The
+bar is now the measured 90th percentile, **2.29**, which flags three of fourteen.
+It is read against the real-world distribution rather than the simulator's,
+because the longshot work established the simulation's upper tail runs about
+twice as fat as reality above 40 projected yards.
+
+**A situational edge.** `situational_edges` ranks down-and-distance bands by the
+sum of an offence's EPA and the EPA a defence allows there. The top row is not
+an edge: play-level EPA has a standard deviation of **1.259** over the 48,201
+scored plays of 2025, so a 20-play band against a defence's 20 carries a
+two-standard-error bar of 0.80 EPA on the difference. Bands on a real slate run
+12 to 60 plays, and nearly all of them come in under their own bar — the worst
+example reported a "best band" with a net of 0.017. A band now has to clear both
+a 25-play minimum and 2 SE, which means it usually says nothing. That is the
+correct answer rather than a missing one.
+
+**An availability concern.** This cannot be an absolute probability, which was
+the first mistake. The availability layer's baseline for a *healthy* starter is
+already 0.82 (RB1) to 0.89 (TE1) — being an active participant in a given NFL
+game is not a certainty for anyone — and its baseline for a fifth receiver is
+0.52 on role alone. An absolute bar of 0.85 therefore called healthy starters
+injury concerns, flagged Justin Jefferson at a perfectly ordinary 0.80, and
+would have condemned every backup in the league forever. The test is now a 15%
+discount against `AVAILABILITY_PRIOR` for the player's own position and depth
+rank, which the injury report's "Questionable" multiplier (0.72) and a week of
+not practising (0.55) both trip, and which no healthy player trips at any depth.
+
+**A matchup swing.** Reporting "this matchup is worth −1 yards to him" is noise
+phrased as a read. A swing is only mentioned above 8 yards, and a negative one
+is phrased as a cost rather than a benefit.
+
+### The outage this exposed
+
+Building the coordinator views surfaced a defect that had silently disabled the
+entire coverage layer for the whole in-season period.
+
+In-season mode sets the model's anchor season to the season under way, and every
+coverage read in the app asked for `seasons=(anchor,)`. The current season has
+play rows from its first week onward — 11,484 of them — so nothing looked wrong.
+But coverage labels are charted by hand and had not been published for the
+current season, so of those 11,484 rows **zero carried a label**.
+`coverage_fingerprint` returned an empty frame, and with it every man/zone read,
+every shell matchup and every coverage-driven scheme collision vanished from the
+app with no error anywhere. The Games tab was showing scheme collisions computed
+from two of the five axes; the other three silently never fired.
+
+The distinction that caused it is that *play rows are not charting*.
+`coverage.charted_seasons` now reports which seasons actually carry labels, and
+`resolve_coverage_seasons` falls back to the most recent charted season when the
+requested one carries none. Falling back is right rather than merely convenient:
+a defence's coverage habits are the most persistent thing about it, so last
+season's charting is a far better answer than silence. The fallback is reported
+rather than hidden, so a reader can see which season a coverage number came
+from.
+
 ## What this does not do
 
 - **The coaching registry is research, not a feed.** It was assembled from
@@ -831,6 +918,11 @@ projected separately, regressed by its own measured persistence.
 - **Offensive line quality is a rushing and pressure proxy, not a unit model.**
   Yards before contact and pressure allowed stand in for blocking; there is no
   per-lineman projection, so a line that loses a starter is not modelled.
+- **Coverage charting lags the season by months.** Play rows for the current
+  season arrive within days; the hand-charted coverage labels on them do not
+  arrive mid-season at all. Every coverage read therefore falls back to the most
+  recent *charted* season, so in-season coverage numbers describe last year's
+  defence even when everything beside them is current.
 - **Coverage is charted on pass plays only**, so about half of snaps carry a
   label, and the profiles describe last season's staff. Where a defensive
   coordinator changed, the coverage profile is the *old* staff's and should be

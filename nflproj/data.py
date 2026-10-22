@@ -295,6 +295,15 @@ def sync_all(seasons=HISTORY_SEASONS, projection_season: int | None = None) -> d
     if projection_season:
         for a in ("depth", "roster"):
             status[f"{a}_{projection_season}"] = fetch(a, projection_season) is not None
+        # The season under way. In-season mode folds these into usage, team form
+        # and defensive quality, but it reaches them lazily inside a cached
+        # function - so without this a fresh deploy downloads a season of
+        # play-by-play while a reader waits on the first game it projects.
+        # Several of these feeds lag the schedule by days or do not start until
+        # the charting vendor catches up, so a miss here is expected rather than
+        # a failure: it is recorded and the model runs on prior seasons alone.
+        for a in ("pbp", "weekly", "injuries", "ftn", "snaps", "participation"):
+            status[f"{a}_{projection_season}"] = fetch(a, projection_season) is not None
     for a in STATIC_ASSETS:
         status[a] = fetch(a) is not None
     status["games"] = not games().empty
