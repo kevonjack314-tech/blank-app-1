@@ -213,8 +213,18 @@ def player_lotto_lines(game, player: str, burst: float | None = None,
         if projection < MIN_PROJECTION.get(stat, 20.0):
             continue
         b = burst if stat in TAIL_COEFFICIENTS and "burst_x_log_mult" in TAIL_COEFFICIENTS[stat] else None
+        # Lines are snapped to the grid a book actually hangs, which is 25
+        # yards wide above 90. Adjacent multiples therefore collide: a 66-yard
+        # projection puts both 1.9x and 2.0x on 125.5. Everything below is
+        # derived from the rounded line, so the two rows come out byte for byte
+        # identical - the same longshot listed twice, taking two slots on the
+        # board and able to appear twice in one parlay.
+        seen_lines = set()
         for mult in multiples:
             line = _round_line(projection * mult, stat)
+            if line in seen_lines:
+                continue
+            seen_lines.add(line)
             actual_mult = line / projection
             sim_p = float((vals > line).mean())
             p = blended_probability(sim_p, stat, projection, line, b)

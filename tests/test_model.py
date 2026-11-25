@@ -2067,22 +2067,37 @@ def test_coverage_notes_are_not_filed_as_an_attacking_edge():
     assert not any("markedly better against zone" in a for a in off["problems"])
 
 
-def test_the_live_spread_record_is_never_quoted_without_its_one_big_week():
-    """56.9% against the spread is the most misleading true number in the
-    project: one week makes it, and without that week it is 51.7% over 60
-    games — under break-even. Anywhere the headline figure appears, the
-    decomposition has to appear with it."""
+def test_the_live_spread_record_converged_on_the_backtest():
+    """The prediction this project made, and then got to watch come true.
+
+    At week 6 the live ATS record read 56.9% and looked like an edge. It was
+    called here as one week wearing a disguise - week 4 alone went 11-3 and the
+    rest were coin flips - and the backtest said 48.2% over 539 games. Five
+    weeks later the live record settled at 48.6% over 142 games. Pinned so the
+    headline figure is never quietly restored to the flattering one."""
+    from nflproj import coach as ch
+
+    assert ch.LIVE_2026_ATS < ch.ATS_BREAKEVEN, \
+        "the live spread record is below break-even and must be reported so"
+    assert abs(ch.LIVE_2026_ATS - ch.ATS_RECORD) < 0.01, \
+        "live and backtest ATS should agree to within a point"
+    assert ch.LIVE_2026_ATS_SAMPLE >= 140
+
+
+def test_the_underdog_rate_is_carried_as_the_reason_the_spread_record_fails():
+    """Not a view about underdogs: compressed margins sit closer to a pick'em
+    than the line does, so a side derived from them takes the dog by
+    construction. It is the mechanism, and it got worse, not better."""
     from pathlib import Path
     from nflproj import coach as ch
 
-    assert ch.LIVE_2026_ATS > ch.ATS_BREAKEVEN, "the trap only exists above break-even"
-    assert ch.LIVE_2026_ATS_EX_BEST_WEEK < ch.ATS_BREAKEVEN, \
-        "with its best week removed the record must be below break-even"
-    assert ch.LIVE_2026_ATS_EX_BEST_SAMPLE < ch.LIVE_2026_SAMPLE
+    assert ch.LIVE_2026_UNDERDOG_RATE > ch.ATS_UNDERDOG_RATE, \
+        "the live underdog rate exceeded the backtest's 78.7%"
+    assert ch.LIVE_2026_UNDERDOG_RATE > 0.85
 
     app = (Path(__file__).resolve().parent.parent / "streamlit_app.py").read_text()
-    assert "LIVE_2026_ATS_EX_BEST_WEEK" in app, \
-        "the app quotes the ATS record, so it must also quote it without week 4"
+    assert "LIVE_2026_UNDERDOG_RATE" in app, \
+        "the app quotes the spread record, so it must also quote the mechanism"
 
 
 def test_the_live_record_still_trails_the_market_straight_up():
@@ -2138,3 +2153,32 @@ def test_the_report_passes_the_calls_reasons_through_to_the_coordinator():
     call["reasons"] = ["**Perimeter runs vs light boxes** — e1. d1"]
     rep = stf.staff_report(call, _staff_row(), _staff_plan())
     assert not any("Perimeter runs" in a for a in rep["offense"]["attack"])
+
+
+def test_a_longshot_line_is_never_listed_twice_for_one_player():
+    """Lines snap to the grid a book hangs, 25 yards wide above 90, so
+    adjacent multiples collide: a 66-yard projection puts both 1.9x and 2.0x
+    on 125.5. Every field below the line is derived from it, so the rows came
+    out identical - the same bet taking two slots on the board, and able to
+    appear twice in one parlay."""
+    import numpy as np
+    from nflproj import lotto as lt
+
+    # 1.9x and 2.0x of 66 both round onto the same line.
+    assert lt._round_line(66.0 * 1.9, "rec_yards") == lt._round_line(66.0 * 2.0, "rec_yards")
+
+    rng = np.random.default_rng(3)
+    draws = rng.gamma(shape=1.6, scale=41.0, size=20000)   # mean near 66
+
+    class _G:
+        meta = {"Grid Collider": {"position": "WR", "team": "DAL", "p_active": 0.97}}
+        def active_mask(self, player): return np.ones(len(draws), dtype=bool)
+        def stat(self, player, stat):
+            return draws if stat == "rec_yards" else None
+
+    df = lt.player_lotto_lines(_G(), "Grid Collider")
+    if df.empty:
+        pytest.skip("no qualifying longshot lines for this draw")
+    key = ["player", "stat", "line"]
+    assert len(df) == len(df.drop_duplicates(key)), \
+        f"duplicate longshot lines: {df[df.duplicated(key, keep=False)][key].to_dict('records')}"

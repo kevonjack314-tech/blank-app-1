@@ -87,37 +87,42 @@ MARKET_MARGIN_SD = 5.91
 # Live 2026: every game projected from only the weeks that preceded it. The
 # first real out-of-sample run, and it is not flattering.
 #
-# Through week 6, rebuilt each week from only the weeks that preceded it:
+# Through week 11, 147 games:
 #
-#   straight up   51.3% (39-37)   the closing line went 60.5% on the same games
-#   against spread 56.9% (41-31)  above break-even, but n = 72 and +-11.4
-#   totals        40.3% (31-46)
-#   margin error  9.05 against the market's 8.90
+#   straight up   57.5% (84-62)   the closing line went 67.8% on the same games
+#   against spread 48.6% (69-73)  under the 52.38% break-even
+#   totals        47.6% (70-77)
+#   margin error  10.24 against the market's 9.22
 #
-# The spread figure is the one to be careful about, because it looks like an
-# edge and is not. One week makes it: week 4 went 11-3 (78.6%) and the other
-# four weeks went 50.0%, 50.0%, 50.0% and 57.1%. Drop week 4 and the record is
-# 51.7% over 60 games, under break-even. The 95% interval on the full 72 games
-# runs 45.5% to 68.3%, so break-even sits comfortably inside it. This is a
-# coin flip with one good Sunday in it, which is exactly what the 539-game
-# backtest at 48.2% predicted it would look like.
+# The spread number is the one worth recording, because it is the prediction
+# this file made and then watched come true. Through week 6 it read 56.9% and
+# looked like an edge; it was flagged here as one week wearing a disguise,
+# since week 4 alone went 11-3 and the rest were coin flips. The five weeks
+# that followed went 35.7%, 42.9%, 26.7%, 42.9% and 53.8%, and the record has
+# settled at 48.6% over 142 games with a result - within four tenths of a point
+# of the 48.2% the 539-game backtest predicted. The backtest was right and the
+# live blip was noise. Nothing about the model changed; the sample grew.
 #
-# Straight up is the honest headline and it got worse, not better: picking
-# winners nine points behind the closing line, and below the 64.7% the model
-# managed in backtest. Margin error is now within 0.15 points of the market's,
-# which says the model's *numbers* are close - it is the sides it turns them
-# into that are not.
-LIVE_2026_SU = 0.513
-LIVE_2026_MARKET_SU = 0.605
-LIVE_2026_ATS = 0.569
-LIVE_2026_TOTALS = 0.403
-LIVE_2026_SAMPLE = 77
-LIVE_2026_THROUGH_WEEK = 6
-# What the spread record looks like with its one big week removed. Carried as a
-# constant because quoting 56.9% without it would be the most misleading true
-# number in this file.
-LIVE_2026_ATS_EX_BEST_WEEK = 0.517
-LIVE_2026_ATS_EX_BEST_SAMPLE = 60
+# The underdog rate is the mechanism, and it is getting worse rather than
+# better: the model now takes the underdog 91.5% of the time, against 78.7% in
+# backtest. Margins regressed toward the mean sit closer to a pick'em than the
+# line does, so a side derived from them is a bet on dogs by construction. The
+# widening margin error - 10.24 against 9.22, where at week 6 the gap was 0.15
+# points - says the same thing from the other direction.
+#
+# Straight up improved to 57.5% and is still ten points behind the closing
+# line, which is the honest headline.
+LIVE_2026_SU = 0.575
+LIVE_2026_MARKET_SU = 0.678
+LIVE_2026_ATS = 0.486
+LIVE_2026_TOTALS = 0.476
+LIVE_2026_SAMPLE = 147
+LIVE_2026_THROUGH_WEEK = 11
+LIVE_2026_ATS_SAMPLE = 142
+# How often the model's spread side is the underdog. Not a view about dogs:
+# an arithmetic consequence of compressed margins, and the reason the ATS
+# record cannot beat the number.
+LIVE_2026_UNDERDOG_RATE = 0.915
 
 # Totals: the band that looked promising is dead, and this is how it died.
 #
